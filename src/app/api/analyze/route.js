@@ -51,11 +51,13 @@ async function getFootballData(jogo) {
       return '';
     }
     const teamData = await teamRes.json();
+    console.log('Football API /teams resultado:', JSON.stringify(teamData?.response?.slice(0,3)));
     const teamId = teamData?.response?.[0]?.team?.id;
     if (!teamId) {
       console.error('Football API: time não encontrado para', team);
       return '';
     }
+    console.log('Football API: teamId encontrado:', teamId);
 
     // 2) Buscar próximas partidas usando o ID
     const res = await fetch(
@@ -67,8 +69,12 @@ async function getFootballData(jogo) {
       return '';
     }
     const d = await res.json();
+    console.log('Football API /fixtures resultado bruto:', JSON.stringify(d).slice(0, 800));
     const fixture = d?.response?.[0];
-    if (!fixture) return '';
+    if (!fixture) {
+      console.error('Football API: nenhum fixture futuro encontrado para teamId', teamId);
+      return '';
+    }
     return `\nDados API-Football: ${JSON.stringify(fixture).slice(0, 500)}`;
   } catch (e) {
     console.error('Football API exception:', e.message);
