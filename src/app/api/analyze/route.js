@@ -136,14 +136,23 @@ async function getFootballData(jogo) {
     return { disponivel: false, motivo: `Time "${faltando}" não encontrado na base da API-Football.` };
   }
 
-  const proximoJogo = await buscarProximoJogo(idA, headers);
-  const leagueId = proximoJogo?.league?.id || null;
-  const season = proximoJogo?.league?.season || null;
+  // Cada time tem sua própria liga/temporada — times de confederações ou
+  // campeonatos diferentes (comum em amistosos de seleções) não podem
+  // compartilhar o mesmo contexto de liga, ou a busca de estatísticas do
+  // outro time simplesmente não acha nada.
+  const [proximoJogoA, proximoJogoB] = await Promise.all([
+    buscarProximoJogo(idA, headers),
+    buscarProximoJogo(idB, headers),
+  ]);
+  const leagueIdA = proximoJogoA?.league?.id || null;
+  const seasonA = proximoJogoA?.league?.season || null;
+  const leagueIdB = proximoJogoB?.league?.id || null;
+  const seasonB = proximoJogoB?.league?.season || null;
 
   const [h2h, statsA, statsB] = await Promise.all([
     buscarHeadToHead(idA, idB, headers),
-    buscarEstatisticasTime(idA, leagueId, season, headers),
-    buscarEstatisticasTime(idB, leagueId, season, headers),
+    buscarEstatisticasTime(idA, leagueIdA, seasonA, headers),
+    buscarEstatisticasTime(idB, leagueIdB, seasonB, headers),
   ]);
 
   const h2hResumido = (h2h || []).slice(0, 10).map(f => ({
@@ -157,9 +166,10 @@ async function getFootballData(jogo) {
     disponivel: true,
     time_a: timeA,
     time_b: timeB,
-    liga: proximoJogo?.league?.name || null,
-    temporada: season,
-    proximo_jogo_data: proximoJogo?.fixture?.date || null,
+    liga_time_a: proximoJogoA?.league?.name || null,
+    liga_time_b: proximoJogoB?.league?.name || null,
+    temporada_time_a: seasonA,
+    temporada_time_b: seasonB,
     confrontos_diretos: h2hResumido.length ? h2hResumido : null,
     confrontos_diretos_indisponivel: h2hResumido.length === 0,
     estatisticas_time_a: statsA,
