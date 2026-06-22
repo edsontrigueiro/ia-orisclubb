@@ -17,6 +17,8 @@ export async function POST(request) {
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
     return NextResponse.json({
       token: data.session?.access_token || null,
+      refresh_token: data.session?.refresh_token || null,
+      expires_at: data.session?.expires_at || null,
       user: { id: data.user.id, email: data.user.email }
     });
   } catch { return NextResponse.json({ error: 'Erro interno.' }, { status: 500 }); }
