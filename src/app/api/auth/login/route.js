@@ -12,6 +12,8 @@ export async function POST(request) {
     if (error) return NextResponse.json({ error: 'E-mail ou senha incorretos.' }, { status: 401 });
     return NextResponse.json({
       token: data.session.access_token,
+      refresh_token: data.session.refresh_token,
+      expires_at: data.session.expires_at,
       user: { id: data.user.id, email: data.user.email }
     });
   } catch { return NextResponse.json({ error: 'Erro interno.' }, { status: 500 }); }
