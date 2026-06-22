@@ -31,55 +31,153 @@ function demoResult(jogo, mercado) {
   };
 }
 
+function parseTimes(jogo) {
+  const partes = jogo.split(/\s+vs\s+|\s+x\s+/i);
+  return {
+    timeA: partes[0]?.trim() || null,
+    timeB: partes[1]?.trim() || null,
+  };
+}
+
+async function buscarIdTime(nome, headers) {
+  try {
+    const res = await fetch(
+      `https://v3.football.api-sports.io/teams?search=${encodeURIComponent(nome)}`,
+      { headers }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.response?.[0]?.team?.id || null;
+  } catch (e) {
+    console.error('buscarIdTime exception:', e.message);
+    return null;
+  }
+}
+
+async function buscarProximoJogo(teamId, headers) {
+  try {
+    const res = await fetch(
+      `https://v3.football.api-sports.io/fixtures?team=${teamId}&next=1`,
+      { headers }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.response?.[0] || null;
+  } catch (e) {
+    console.error('buscarProximoJogo exception:', e.message);
+    return null;
+  }
+}
+
+async function buscarHeadToHead(idA, idB, headers) {
+  try {
+    const res = await fetch(
+      `https://v3.football.api-sports.io/fixtures/headtohead?h2h=${idA}-${idB}&last=10`,
+      { headers }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.response || null;
+  } catch (e) {
+    console.error('buscarHeadToHead exception:', e.message);
+    return null;
+  }
+}
+
+async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
+  if (!leagueId || !season) return null;
+  try {
+    const res = await fetch(
+      `https://v3.football.api-sports.io/teams/statistics?team=${teamId}&league=${leagueId}&season=${season}`,
+      { headers }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const s = data?.response;
+    if (!s || !s.fixtures) return null;
+    return {
+      jogos_disputados: s.fixtures?.played?.total ?? null,
+      vitorias: s.fixtures?.wins?.total ?? null,
+      empates: s.fixtures?.draws?.total ?? null,
+      derrotas: s.fixtures?.loses?.total ?? null,
+      media_gols_marcados: s.goals?.for?.average?.total ?? null,
+      media_gols_sofridos: s.goals?.against?.average?.total ?? null,
+      jogos_sem_sofrer_gol: s.clean_sheet?.total ?? null,
+      jogos_sem_marcar_gol: s.failed_to_score?.total ?? null,
+    };
+  } catch (e) {
+    console.error('buscarEstatisticasTime exception:', e.message);
+    return null;
+  }
+}
+
+// Monta um pacote de dados reais sobre o confronto. Retorna sempre um objeto
+// explícito indicando o que foi possível obter, para o prompt nunca tratar
+// dado ausente como dado real.
 async function getFootballData(jogo) {
   const key = process.env.FOOTBALL_API_KEY;
   if (!key) {
-    console.error('FOOTBALL_API_KEY não configurada.');
-    return '';
+    return { disponivel: false, motivo: 'FOOTBALL_API_KEY não configurada.' };
   }
   const headers = { 'x-apisports-key': key };
-  try {
-    const team = jogo.split(/\s+vs\s+|\s+x\s+/i)[0].trim();
 
-    // 1) Descobrir o ID do time (o endpoint /fixtures não aceita busca por nome)
-    const teamRes = await fetch(
-      `https://v3.football.api-sports.io/teams?search=${encodeURIComponent(team)}`,
-      { headers }
-    );
-    if (!teamRes.ok) {
-      console.error('Football API /teams status:', teamRes.status, await teamRes.text());
-      return '';
-    }
-    const teamData = await teamRes.json();
-    console.log('Football API /teams resultado:', JSON.stringify(teamData?.response?.slice(0,3)));
-    const teamId = teamData?.response?.[0]?.team?.id;
-    if (!teamId) {
-      console.error('Football API: time não encontrado para', team);
-      return '';
-    }
-    console.log('Football API: teamId encontrado:', teamId);
-
-    // 2) Buscar próximas partidas usando o ID
-    const res = await fetch(
-      `https://v3.football.api-sports.io/fixtures?team=${teamId}&next=5`,
-      { headers }
-    );
-    if (!res.ok) {
-      console.error('Football API /fixtures status:', res.status, await res.text());
-      return '';
-    }
-    const d = await res.json();
-    console.log('Football API /fixtures resultado bruto:', JSON.stringify(d).slice(0, 800));
-    const fixture = d?.response?.[0];
-    if (!fixture) {
-      console.error('Football API: nenhum fixture futuro encontrado para teamId', teamId);
-      return '';
-    }
-    return `\nDados API-Football: ${JSON.stringify(fixture).slice(0, 500)}`;
-  } catch (e) {
-    console.error('Football API exception:', e.message);
-    return '';
+  const { timeA, timeB } = parseTimes(jogo);
+  if (!timeA || !timeB) {
+    return { disponivel: false, motivo: 'Não foi possível identificar os dois times no texto informado (use "Time A vs Time B").' };
   }
+
+  const [idA, idB] = await Promise.all([
+    buscarIdTime(timeA, headers),
+    buscarIdTime(timeB, headers),
+  ]);
+
+  if (!idA || !idB) {
+    const faltando = !idA ? timeA : timeB;
+    return { disponivel: false, motivo: `Time "${faltando}" não encontrado na base da API-Football.` };
+  }
+
+  const proximoJogo = await buscarProximoJogo(idA, headers);
+  const leagueId = proximoJogo?.league?.id || null;
+  const season = proximoJogo?.league?.season || null;
+
+  const [h2h, statsA, statsB] = await Promise.all([
+    buscarHeadToHead(idA, idB, headers),
+    buscarEstatisticasTime(idA, leagueId, season, headers),
+    buscarEstatisticasTime(idB, leagueId, season, headers),
+  ]);
+
+  const h2hResumido = (h2h || []).slice(0, 10).map(f => ({
+    data: f.fixture?.date,
+    casa: f.teams?.home?.name,
+    fora: f.teams?.away?.name,
+    placar: `${f.goals?.home ?? '?'}-${f.goals?.away ?? '?'}`,
+  }));
+
+  return {
+    disponivel: true,
+    time_a: timeA,
+    time_b: timeB,
+    liga: proximoJogo?.league?.name || null,
+    temporada: season,
+    proximo_jogo_data: proximoJogo?.fixture?.date || null,
+    confrontos_diretos: h2hResumido.length ? h2hResumido : null,
+    confrontos_diretos_indisponivel: h2hResumido.length === 0,
+    estatisticas_time_a: statsA,
+    estatisticas_time_b: statsB,
+    estatisticas_indisponiveis: !statsA && !statsB,
+  };
+}
+
+function montarSystemPrompt() {
+  return `Você é um analista estatístico de apostas esportivas, rigoroso e conservador. Siga estas regras de forma inegociável:
+
+1. Use SOMENTE os dados fornecidos no bloco "DADOS" abaixo. Nunca invente médias, placares de confrontos diretos, ou estatísticas que não estejam explicitamente presentes nos dados.
+2. Se um campo de dados estiver nulo, ausente, ou marcado como indisponível, trate-o como informação que você NÃO TEM — não preencha com suposição genérica.
+3. Quanto menos dados reais disponíveis, menor deve ser o "score" e o "probabilidade_real", e isso deve ser explicado em "alertas". Análise sem dados suficientes deve tender a "aprovado": false.
+4. Os campos "criterios_atendidos" e "criterios_nao_atendidos" devem citar números concretos vindos dos dados (ex: "média de 1.8 gols marcados em 10 jogos"), nunca frases vagas como "boa forma" sem número de apoio.
+5. Se os dados estiverem totalmente indisponíveis, diga isso claramente no "insight" e no "resumo", e ainda assim responda apenas com o JSON pedido.
+
+Responda SOMENTE com JSON válido, sem markdown, sem texto fora do JSON.`;
 }
 
 export async function POST(request) {
@@ -97,7 +195,11 @@ export async function POST(request) {
     if (!apiKey) return NextResponse.json(demoResult(jogo, mercado));
 
     const min = MERCADOS[mercado].min;
-    const extraCtx = await getFootballData(jogo);
+    const dadosReais = await getFootballData(jogo);
+
+    const blocoDados = dadosReais.disponivel
+      ? `DADOS:\n${JSON.stringify(dadosReais)}`
+      : `DADOS: indisponíveis. Motivo: ${dadosReais.motivo}`;
 
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
@@ -107,20 +209,23 @@ export async function POST(request) {
         'anthropic-version': '2023-06-01',
       },
       body: JSON.stringify({
-       model: 'claude-haiku-4-5-20251001',
-        max_tokens: 900,
+        model: 'claude-sonnet-4-6',
+        max_tokens: 1500,
+        system: montarSystemPrompt(),
         messages: [{
           role: 'user',
-          content: `Analise "${jogo}" para o mercado "${mercado}". Score mínimo para aprovar: ${min}/100.${extraCtx}
+          content: `Analise "${jogo}" para o mercado "${mercado}". Score mínimo para aprovar: ${min}/100.
 
-Responda SOMENTE JSON válido sem markdown:
-{"evento":"nome formatado","competicao":"liga","score":0-100,"aprovado":bool,"odds_estimada":"1.XX","probabilidade_real":0-100,"criterios_atendidos":["..."],"criterios_nao_atendidos":["..."],"alertas":[],"insight":"frase curta explicando score","resumo":"2-3 frases operacionais para o trader"}`
+${blocoDados}
+
+Responda SOMENTE JSON válido sem markdown, neste formato exato:
+{"evento":"nome formatado","competicao":"liga ou null","score":0-100,"aprovado":bool,"odds_estimada":"1.XX","probabilidade_real":0-100,"criterios_atendidos":["..."],"criterios_nao_atendidos":["..."],"alertas":[],"insight":"frase curta explicando o score, citando dado real se houver","resumo":"2-3 frases operacionais para o trader"}`
         }]
       }),
     });
 
     if (!res.ok) {
-      console.error('Anthropic error:', res.status);
+      console.error('Anthropic error:', res.status, await res.text().catch(() => ''));
       return NextResponse.json(demoResult(jogo, mercado));
     }
 
@@ -130,6 +235,7 @@ Responda SOMENTE JSON válido sem markdown:
 
     const result = JSON.parse(text);
     result._minScore = min;
+    result._dadosReaisUsados = dadosReais.disponivel;
     return NextResponse.json(result);
 
   } catch (e) {
