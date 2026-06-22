@@ -1,7 +1,8 @@
-'use client';
+''use client';
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
+import { saveSession } from '@/lib/clientSession';
 
 export default function Cadastro() {
   const [name, setName] = useState('');
@@ -23,9 +24,7 @@ export default function Cadastro() {
       const data = await res.json();
       if (!res.ok) { setErr(data.error || 'Erro ao criar conta.'); return; }
       if (data.token) {
-        document.cookie = `st_token=${data.token}; path=/; max-age=${7*24*3600}; SameSite=Lax`;
-        localStorage.setItem('st_token', data.token);
-        localStorage.setItem('st_user', JSON.stringify(data.user));
+        saveSession(data);
         router.push('/app');
       } else {
         // Email confirmation required
