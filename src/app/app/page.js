@@ -2,6 +2,7 @@
 export const dynamic = 'force-dynamic';
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
+import { authFetch, getStoredToken, getStoredUser, clearSession } from '@/lib/clientSession';
 
 // ── DESIGN TOKENS ──
 const C = {
@@ -27,7 +28,7 @@ export default function App() {
   const router = useRouter();
   const [tab, setTab] = useState('analises');
   const [user, setUser] = useState(null);
-  const [token, setToken] = useState('');
+  const [authReady, setAuthReady] = useState(false);
 
   // Análises state
   const [jogo, setJogo] = useState('');
@@ -46,38 +47,44 @@ export default function App() {
   const [updatingId, setUpdatingId] = useState(null);
 
   useEffect(() => {
-    const t = localStorage.getItem('st_token');
-    const u = localStorage.getItem('st_user');
+    const t = getStoredToken();
     if (!t) { router.push('/login'); return; }
-    setToken(t);
-    if (u) try { setUser(JSON.parse(u)); } catch {}
+    setUser(getStoredUser());
+    setAuthReady(true);
   }, [router]);
 
   useEffect(() => {
-    if (token && tab === 'historico') loadSignals();
-    if (token && tab === 'desempenho') loadSignals();
-  }, [tab, token]);
+    if (authReady && tab === 'historico') loadSignals();
+    if (authReady && tab === 'desempenho') loadSignals();
+  }, [tab, authReady]);
+
+  function goToLoginExpired() {
+    clearSession();
+    router.push('/login?msg=sessao-expirada');
+  }
 
   const loadSignals = useCallback(async () => {
-    if (!token) return;
     setLoadingSignals(true);
     try {
-      const res = await fetch('/api/signals', { headers: { Authorization: `Bearer ${token}` } });
+      const { res, sessionExpired } = await authFetch('/api/signals');
+      if (sessionExpired) { goToLoginExpired(); return; }
       const data = await res.json();
       if (data.signals) setSignals(data.signals);
     } catch {} finally { setLoadingSignals(false); }
-  }, [token]);
+  }, []);
 
   async function analyze() {
     if (!jogo.trim()) return;
     setAnalyzing(true); setResult(null); setDecisao(null); setSaved(false);
     try {
-      const res = await fetch('/api/analyze', {
+      const { res, sessionExpired } = await authFetch('/api/analyze', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ jogo, mercado: mkt }),
       });
+      if (sessionExpired) { goToLoginExpired(); return; }
       const data = await res.json();
+      if (!res.ok) { setResult({ _error: true, _msg: data?.error || null }); return; }
       setResult(data);
     } catch { setResult({ _error: true }); }
     finally { setAnalyzing(false); }
@@ -100,11 +107,12 @@ export default function App() {
         odd: decisao === 'pegar' ? parseFloat(odd) || null : null,
         stake: decisao === 'pegar' ? parseFloat(stake) || null : null,
       };
-      const res = await fetch('/api/signals', {
+      const { res, sessionExpired } = await authFetch('/api/signals', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(body),
       });
+      if (sessionExpired) { goToLoginExpired(); return; }
       if (res.ok) {
         setSaved(true);
         // Reset form
@@ -119,18 +127,18 @@ export default function App() {
   async function updateResult(id, resultado) {
     setUpdatingId(id);
     try {
-      await fetch('/api/signals', {
+      const { sessionExpired } = await authFetch('/api/signals', {
         method: 'PATCH',
-        headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
+        headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id, resultado }),
       });
+      if (sessionExpired) { goToLoginExpired(); return; }
       await loadSignals();
     } catch {} finally { setUpdatingId(null); }
   }
 
   function logout() {
-    document.cookie = 'st_token=; path=/; max-age=0';
-    localStorage.clear();
+    clearSession();
     router.push('/login');
   }
 
@@ -151,7 +159,7 @@ export default function App() {
   const mktInfo = MKTS.find(m => m.label === mkt) || MKTS[0];
   const lucPotencial = odd && stake ? ((parseFloat(stake) * parseFloat(odd)) - parseFloat(stake)) : null;
 
-  if (!token) return <div style={{minHeight:'100vh',background:C.bg,display:'flex',alignItems:'center',justifyContent:'center'}}><div style={{color:C.muted,fontSize:'13px'}}>Carregando...</div></div>;
+  if (!authReady) return <div style={{minHeight:'100vh',background:C.bg,display:'flex',alignItems:'center',justifyContent:'center'}}><div style={{color:C.muted,fontSize:'13px'}}>Carregando...</div></div>;
 
   return (
     <div style={{minHeight:'100vh',background:C.bg,fontFamily:'Inter,system-ui,sans-serif',color:C.text}}>
@@ -320,7 +328,7 @@ export default function App() {
                         FALHA NA ANÁLISE
                       </div>
                       <div style={{fontSize:'12px',color:C.muted,marginTop:'3px',lineHeight:1.5}}>
-                        Não foi possível completar a análise (erro de conexão). Tente novamente.
+                        {result._msg || 'Não foi possível completar a análise (erro de conexão). Tente novamente.'}
                       </div>
                     </div>
                   </div>
