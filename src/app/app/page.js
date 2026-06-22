@@ -307,8 +307,46 @@ export default function App() {
                   </div>
                 )}
 
-                {result && !analyzing && (
+                {result && !analyzing && result._error && (
+                  <div style={{
+                    background:'rgba(239,68,68,.12)',
+                    border:'1px solid rgba(239,68,68,.4)',
+                    borderRadius:'12px',padding:'14px 16px',
+                    display:'flex',alignItems:'flex-start',gap:'10px',
+                  }}>
+                    <span style={{fontSize:'18px',lineHeight:1}}>⚠️</span>
+                    <div>
+                      <div style={{fontSize:'13px',fontWeight:800,color:'#ef4444',letterSpacing:'.3px'}}>
+                        FALHA NA ANÁLISE
+                      </div>
+                      <div style={{fontSize:'12px',color:C.muted,marginTop:'3px',lineHeight:1.5}}>
+                        Não foi possível completar a análise (erro de conexão). Tente novamente.
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {result && !analyzing && !result._error && (
                   <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
+
+                    {result._demo && (
+                      <div style={{
+                        background:'rgba(239,68,68,.12)',
+                        border:'1px solid rgba(239,68,68,.4)',
+                        borderRadius:'12px',padding:'14px 16px',
+                        display:'flex',alignItems:'flex-start',gap:'10px',
+                      }}>
+                        <span style={{fontSize:'18px',lineHeight:1}}>⚠️</span>
+                        <div>
+                          <div style={{fontSize:'13px',fontWeight:800,color:'#ef4444',letterSpacing:'.3px'}}>
+                            ANÁLISE EM MODO DEMONSTRAÇÃO
+                          </div>
+                          <div style={{fontSize:'12px',color:C.muted,marginTop:'3px',lineHeight:1.5}}>
+                            Este resultado é simulado e não usa IA real nem dados de jogos ao vivo. Não use para decisões de aposta.
+                          </div>
+                        </div>
+                      </div>
+                    )}
 
                     {/* Score card */}
                     <div style={{
