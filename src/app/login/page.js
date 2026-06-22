@@ -1,15 +1,31 @@
 'use client';
-import { useState } from 'react';
-import { useRouter } from 'next/navigation';
+import { useState, Suspense } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
+import { saveSession } from '@/lib/clientSession';
+
+const MSGS = {
+  'sessao-expirada': 'Sua sessão expirou. Faça login novamente.',
+  'confirme-email': 'Conta criada! Confirme seu e-mail antes de entrar.',
+};
 
 export default function Login() {
+  return (
+    <Suspense fallback={null}>
+      <LoginForm />
+    </Suspense>
+  );
+}
+
+function LoginForm() {
   const [email, setEmail] = useState('');
   const [pass, setPass] = useState('');
   const [err, setErr] = useState('');
   const [loading, setLoading] = useState(false);
   const [showPass, setShowPass] = useState(false);
   const router = useRouter();
+  const searchParams = useSearchParams();
+  const infoMsg = MSGS[searchParams.get('msg')] || '';
 
   async function submit(e) {
     e.preventDefault();
@@ -22,9 +38,7 @@ export default function Login() {
       });
       const data = await res.json();
       if (!res.ok) { setErr(data.error || 'Erro ao entrar.'); return; }
-      document.cookie = `st_token=${data.token}; path=/; max-age=${7*24*3600}; SameSite=Lax`;
-      localStorage.setItem('st_token', data.token);
-      localStorage.setItem('st_user', JSON.stringify(data.user));
+      saveSession(data);
       router.push('/app');
     } catch { setErr('Erro de conexão.'); }
     finally { setLoading(false); }
@@ -54,6 +68,8 @@ export default function Login() {
           <div style={{padding:'28px 28px 24px'}}>
             <div style={S.title}>Entrar na plataforma</div>
             <div style={S.sub}>Acesse sua conta para continuar</div>
+
+            {infoMsg && <div style={S.info}>{infoMsg}</div>}
 
             <form onSubmit={submit}>
               <div style={S.fgroup}>
@@ -112,6 +128,7 @@ const S = {
   inp:{width:'100%',background:'#131a14',border:'1px solid rgba(255,255,255,.07)',color:'#f0f5f2',borderRadius:'8px',padding:'11px 13px',fontSize:'14px',outline:'none',boxSizing:'border-box',fontFamily:'inherit',transition:'border .18s'},
   eyeBtn:{position:'absolute',right:'12px',top:'50%',transform:'translateY(-50%)',background:'none',border:'none',color:'#5a7a6a',cursor:'pointer',padding:'2px',display:'flex',alignItems:'center'},
   err:{background:'rgba(239,68,68,.08)',border:'1px solid rgba(239,68,68,.2)',borderRadius:'8px',padding:'10px 12px',fontSize:'12.5px',color:'#f87171',marginBottom:'16px'},
+  info:{background:'rgba(0,208,132,.08)',border:'1px solid rgba(0,208,132,.2)',borderRadius:'8px',padding:'10px 12px',fontSize:'12.5px',color:'#00d084',marginBottom:'16px'},
   btn:{width:'100%',background:'#00d084',color:'#000',border:'none',borderRadius:'8px',padding:'13px',fontSize:'14px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginTop:'4px',transition:'all .18s'},
   footer:{textAlign:'center',marginTop:'20px',fontSize:'13px',color:'#5a7a6a'},
   copy:{textAlign:'center',marginTop:'20px',fontSize:'11px',color:'#243328'},
