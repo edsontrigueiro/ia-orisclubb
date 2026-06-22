@@ -3,6 +3,7 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import Link from 'next/link';
 import { saveSession } from '@/lib/clientSession';
+import { C, FONT_DISPLAY, FONT_BODY } from '@/lib/theme';
 
 export default function Cadastro() {
   const [name, setName] = useState('');
@@ -27,7 +28,6 @@ export default function Cadastro() {
         saveSession(data);
         router.push('/app');
       } else {
-        // Email confirmation required
         router.push('/login?msg=confirme-email');
       }
     } catch { setErr('Erro de conexão.'); }
@@ -38,17 +38,13 @@ export default function Cadastro() {
     <div style={S.page}>
       <div style={S.wrap}>
         <div style={S.logo}>
-          <svg width="36" height="36" viewBox="0 0 44 44" fill="none">
-            <defs><linearGradient id="lg" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stopColor="#00d084"/><stop offset="100%" stopColor="#00b4d8"/></linearGradient></defs>
-            <rect x="1" y="1" width="42" height="42" rx="10" fill="url(#lg)" fillOpacity=".12"/>
-            <rect x="1" y="1" width="42" height="42" rx="10" stroke="url(#lg)" strokeWidth="1.5" fill="none"/>
-            <polyline points="10,31 18,21 26,26 34,13" stroke="#00d084" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
-            <polyline points="27,13 34,13 34,20" stroke="#00d084" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" fill="none"/>
-            <line x1="6" y1="35" x2="38" y2="35" stroke="#00d084" strokeWidth="1.5" strokeLinecap="round" opacity=".5"/>
-            <circle cx="26" cy="35" r="2.5" fill="#00d084" opacity=".8"/>
+          <svg width="38" height="38" viewBox="0 0 44 44" fill="none">
+            <rect x="1" y="1" width="42" height="42" rx="11" fill={C.orangeDim} stroke={C.orange} strokeWidth="1.5"/>
+            <circle cx="22" cy="22" r="11" fill="none" stroke={C.orange} strokeWidth="2.2" strokeDasharray="52 17" strokeLinecap="round" transform="rotate(-90 22 22)"/>
+            <circle cx="22" cy="11" r="2" fill={C.orange}/>
           </svg>
           <div>
-            <div style={S.brand}>Scanner<span style={{color:'#00d084'}}>Tips</span></div>
+            <div style={S.brand}>ORIS<span style={{color:C.orange}}> CLUB</span></div>
             <div style={S.brandSub}>ANÁLISE DE SINAIS COM IA</div>
           </div>
         </div>
@@ -86,33 +82,33 @@ export default function Cadastro() {
 
             <div style={S.footer}>
               Já tem conta?{' '}
-              <Link href="/login" style={{color:'#00d084',fontWeight:600,textDecoration:'none'}}>
+              <Link href="/login" style={{color:C.orange,fontWeight:600,textDecoration:'none'}}>
                 Entrar
               </Link>
             </div>
           </div>
         </div>
-        <div style={S.copy}>© 2025 Scanner Tips · Análise de apostas com IA</div>
+        <div style={S.copy}>© 2026 Oris Club · Análise de apostas com IA</div>
       </div>
     </div>
   );
 }
 
 const S = {
-  page:{minHeight:'100vh',background:'#070a08',display:'flex',alignItems:'center',justifyContent:'center',padding:'20px',fontFamily:'Inter,system-ui,sans-serif'},
+  page:{minHeight:'100vh',background:C.bg,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px',fontFamily:FONT_BODY},
   wrap:{width:'100%',maxWidth:'420px'},
   logo:{display:'flex',alignItems:'center',gap:'12px',justifyContent:'center',marginBottom:'32px'},
-  brand:{fontSize:'22px',fontWeight:900,color:'#f0f5f2',letterSpacing:'-.5px'},
-  brandSub:{fontSize:'9px',fontWeight:700,color:'#3d5548',letterSpacing:'2.5px',marginTop:'1px'},
-  card:{background:'#0f1510',border:'1px solid rgba(0,208,132,.15)',borderRadius:'14px',overflow:'hidden',boxShadow:'0 24px 64px rgba(0,0,0,.6)'},
-  cardTop:{height:'2px',background:'linear-gradient(90deg,#00d084,#00b4d8)'},
-  title:{fontSize:'20px',fontWeight:800,color:'#f0f5f2',marginBottom:'5px',letterSpacing:'-.4px'},
-  sub:{fontSize:'13px',color:'#5a7a6a',marginBottom:'24px'},
+  brand:{fontSize:'22px',fontWeight:800,color:C.text,letterSpacing:'-.3px',fontFamily:FONT_DISPLAY},
+  brandSub:{fontSize:'9px',fontWeight:700,color:C.muted2,letterSpacing:'2.5px',marginTop:'2px'},
+  card:{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',overflow:'hidden',boxShadow:'0 24px 64px rgba(0,0,0,.6)'},
+  cardTop:{height:'2px',background:`linear-gradient(90deg,${C.orange},${C.orangeGlow})`},
+  title:{fontSize:'20px',fontWeight:700,color:C.text,marginBottom:'5px',letterSpacing:'-.3px',fontFamily:FONT_DISPLAY},
+  sub:{fontSize:'13px',color:C.muted,marginBottom:'24px'},
   fgroup:{marginBottom:'16px'},
-  label:{display:'block',fontSize:'10px',fontWeight:700,color:'#3d5548',letterSpacing:'1.5px',marginBottom:'7px'},
-  inp:{width:'100%',background:'#131a14',border:'1px solid rgba(255,255,255,.07)',color:'#f0f5f2',borderRadius:'8px',padding:'11px 13px',fontSize:'14px',outline:'none',boxSizing:'border-box',fontFamily:'inherit'},
-  err:{background:'rgba(239,68,68,.08)',border:'1px solid rgba(239,68,68,.2)',borderRadius:'8px',padding:'10px 12px',fontSize:'12.5px',color:'#f87171',marginBottom:'16px'},
-  btn:{width:'100%',background:'#00d084',color:'#000',border:'none',borderRadius:'8px',padding:'13px',fontSize:'14px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginTop:'4px'},
-  footer:{textAlign:'center',marginTop:'20px',fontSize:'13px',color:'#5a7a6a'},
-  copy:{textAlign:'center',marginTop:'20px',fontSize:'11px',color:'#243328'},
+  label:{display:'block',fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1.5px',marginBottom:'7px'},
+  inp:{width:'100%',background:C.bg4,border:`1px solid ${C.border}`,color:C.text,borderRadius:'8px',padding:'11px 13px',fontSize:'14px',outline:'none',boxSizing:'border-box',fontFamily:'inherit'},
+  err:{background:C.redDim,border:`1px solid rgba(255,77,77,.25)`,borderRadius:'8px',padding:'10px 12px',fontSize:'12.5px',color:C.red,marginBottom:'16px'},
+  btn:{width:'100%',background:C.orange,color:'#0A0A0A',border:'none',borderRadius:'8px',padding:'13px',fontSize:'14px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginTop:'4px'},
+  footer:{textAlign:'center',marginTop:'20px',fontSize:'13px',color:C.muted},
+  copy:{textAlign:'center',marginTop:'20px',fontSize:'11px',color:C.muted3},
 };
