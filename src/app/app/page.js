@@ -205,6 +205,35 @@ export default function App() {
     return [...acc, prev + (s.lucro_real || 0)];
   }, []);
 
+  // Desempenho por mercado: a prova real de qual mercado está rendendo de
+  // verdade com SEU dinheiro, em vez de só confiar no que a IA promete na
+  // hora da análise. Ordenado por nº de sinais — mercado com 2 sinais não
+  // prova nada ainda, mercado com 20 já mostra um padrão real.
+  const desempenhoPorMercado = (() => {
+    const porMercado = {};
+    for (const s of encerrados) {
+      const m = s.mercado || 'Sem mercado';
+      if (!porMercado[m]) porMercado[m] = { mercado: m, sinais: [], greens: 0, reds: 0, lucroTotal: 0, stakeTotal: 0 };
+      const g = porMercado[m];
+      g.sinais.push(s);
+      if (s.resultado === 'green') g.greens++;
+      else if (s.resultado === 'red') g.reds++;
+      g.lucroTotal += s.lucro_real || 0;
+      g.stakeTotal += s.stake || 0;
+    }
+    return Object.values(porMercado)
+      .map(g => ({
+        mercado: g.mercado,
+        nSinais: g.sinais.length,
+        winRate: g.sinais.length ? (g.greens / g.sinais.length) * 100 : 0,
+        roi: g.stakeTotal > 0 ? (g.lucroTotal / g.stakeTotal) * 100 : 0,
+        lucroTotal: g.lucroTotal,
+        greens: g.greens,
+        reds: g.reds,
+      }))
+      .sort((a, b) => b.nSinais - a.nSinais);
+  })();
+
   const mktInfo = MKTS.find(m => m.label === mkt) || MKTS[0];
   const lucPotencial = odd && stake ? ((parseFloat(stake) * parseFloat(odd)) - parseFloat(stake)) : null;
 
@@ -764,6 +793,40 @@ export default function App() {
                           );
                         })()}
                       </svg>
+                    </div>
+                  )}
+
+                  {/* Desempenho por mercado — a prova real, com dado seu, de
+                      qual mercado de fato performa, em vez de só a promessa
+                      da IA no momento da análise. */}
+                  {desempenhoPorMercado.length > 0 && (
+                    <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',overflow:'hidden',marginBottom:'16px'}}>
+                      <div style={{padding:'13px 16px',borderBottom:`1px solid ${C.border}`,fontSize:'13px',fontWeight:700}}>Desempenho por Mercado</div>
+                      <div style={{overflowX:'auto'}}>
+                        <table style={{width:'100%',borderCollapse:'collapse',minWidth:'480px'}}>
+                          <thead>
+                            <tr style={{background:C.bg4}}>
+                              {['Mercado','Sinais','Win Rate','ROI','Lucro Total'].map(h => (
+                                <th key={h} style={{padding:'9px 14px',fontSize:'9.5px',fontWeight:700,letterSpacing:'1.2px',textTransform:'uppercase',color:C.muted2,textAlign:'left',whiteSpace:'nowrap'}}>{h}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {desempenhoPorMercado.map((m) => (
+                              <tr key={m.mercado} style={{borderBottom:`1px solid ${C.border}`}}>
+                                <td style={{padding:'11px 14px',fontSize:'12.5px',color:C.text,fontWeight:600,whiteSpace:'nowrap'}}>{m.mercado}</td>
+                                <td style={{padding:'11px 14px',fontSize:'12px',color:C.muted}}>
+                                  {m.nSinais} <span style={{color:C.muted2}}>({m.greens}G/{m.reds}R)</span>
+                                  {m.nSinais < 10 && <span style={{color:C.orangeGlow,marginLeft:'6px',fontSize:'10px'}}>amostra pequena</span>}
+                                </td>
+                                <td style={{padding:'11px 14px',fontSize:'13px',fontWeight:700,color: m.winRate >= 50 ? C.green : C.red,fontFamily:FONT_MONO}}>{m.winRate.toFixed(0)}%</td>
+                                <td style={{padding:'11px 14px',fontSize:'12px',fontWeight:600,color: m.roi >= 0 ? C.green : C.red,fontFamily:FONT_MONO}}>{m.roi>=0?'+':''}{m.roi.toFixed(1)}%</td>
+                                <td style={{padding:'11px 14px',fontSize:'13px',fontWeight:700,color: m.lucroTotal>=0 ? C.green : C.red,fontFamily:FONT_MONO}}>{m.lucroTotal>=0?'+':''}R${fmt(Math.abs(m.lucroTotal))}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
                     </div>
                   )}
 
