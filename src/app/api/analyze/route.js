@@ -3,12 +3,38 @@ import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 
 const MERCADOS = {
-  'Lay 2x2':      { min: 82 },
-  'Lay Zebra':    { min: 85 },
-  '+1.5 Gols':    { min: 83 },
-  '+0.5 Gols':    { min: 88 },
-  'Tênis':        { min: 84 },
-  '-2.5 Gols 1T': { min: 86 },
+  'Lay 2x2':        { min: 82 },
+  'Dupla Chance':   { min: 86 },
+  '+1.5 Gols':      { min: 83 },
+  '+0.5 Gols':      { min: 88 },
+  'Tênis':          { min: 84 },
+  '-2.5 Gols 1T':   { min: 86 },
+  'Lay Empate':     { min: 84 },
+  'Under 3.5 Gols': { min: 85 },
+};
+
+// Critérios estatísticos explícitos por mercado, injetados no prompt da IA
+// para os mercados de alta assertividade. Sem isso, a IA julga "no genérico"
+// e o score deixa de refletir os sinais que de fato tornam esses mercados
+// historicamente mais assertivos.
+const CRITERIOS_MERCADO = {
+  'Dupla Chance': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Dupla Chance (1X ou X2) no favorito:
+- Só aprove se houver diferença CLARA de qualidade entre os times nos dados: favorito com média de gols marcados >= 1.8 e média de gols sofridos <= 1.2; adversário com média de gols sofridos >= 1.5. Se as médias forem parecidas entre os dois times, isso é um jogo equilibrado — REPROVE, mesmo que um dos nomes "pareça" favorito.
+- Nos confrontos diretos disponíveis (até 10), o favorito não deve ter mais de 1 derrota. 2+ derrotas no H2H é sinal de zebra recorrente — reduza o score fortemente.
+- Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times. Menos que isso, reduza o score e diga isso explicitamente em "alertas".
+- Competições eliminatórias / mata-mata (decisão, copa, playoff) têm motivação anormal e mais risco de zebra — se a "liga" indicada nos dados for desse tipo, reduza o score mesmo com favoritismo claro nas médias.`,
+
+  'Lay Empate': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Lay Empate (o jogo não pode terminar em X):
+- Só aprove se a soma das médias de gols marcados dos dois times for >= 2.4. Jogos com tendência ofensiva clara empatam menos.
+- Nos confrontos diretos disponíveis (até 10), no máximo 2 podem ter terminado empatados. 3+ empates no H2H é sinal forte de que esse confronto específico tende ao empate — reprove.
+- Prefira confrontos com diferença de qualidade clara (favorito x zebra). Jogos historicamente equilibrados entre os mesmos dois times tendem a empate; isso deve reduzir o score mesmo se a soma de gols for alta.
+- Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times.`,
+
+  'Under 3.5 Gols': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Under 3.5 Gols (jogo total com 3 gols ou menos):
+- Só aprove se a soma das médias de gols marcados dos dois times for <= 2.6.
+- Exija que pelo menos um dos dois times tenha taxa de "jogos sem sofrer gol" (clean sheets / jogos disputados) >= 25%. Isso indica capacidade defensiva real, não só sorte pontual.
+- Nos confrontos diretos disponíveis (até 10), a média de gols totais por jogo deve ser <= 3.0. Histórico de jogos com 4+ gols entre esses times específicos é motivo forte para reprovar, mesmo com médias de temporada baixas.
+- Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times.`,
 };
 
 function demoResult(jogo, mercado) {
@@ -186,6 +212,7 @@ function montarSystemPrompt() {
 3. Quanto menos dados reais disponíveis, menor deve ser o "score" e o "probabilidade_real", e isso deve ser explicado em "alertas". Análise sem dados suficientes deve tender a "aprovado": false.
 4. Os campos "criterios_atendidos" e "criterios_nao_atendidos" devem citar números concretos vindos dos dados (ex: "média de 1.8 gols marcados em 10 jogos"), nunca frases vagas como "boa forma" sem número de apoio.
 5. Se os dados estiverem totalmente indisponíveis, diga isso claramente no "insight" e no "resumo", e ainda assim responda apenas com o JSON pedido.
+6. Se a mensagem do usuário incluir um bloco "CRITÉRIOS ESPECÍFICOS DESTE MERCADO", esses critérios têm prioridade sobre seu julgamento genérico. Eles definem exatamente o que torna esse mercado estatisticamente confiável — verifique cada condição explicitamente contra os dados e cite no "criterios_atendidos"/"criterios_nao_atendidos" quais delas foram ou não satisfeitas, com o número real que comprova. Se uma condição obrigatória desses critérios não for satisfeita, o score deve cair abaixo do mínimo, independentemente de outros sinais favoráveis.
 
 Responda SOMENTE com JSON válido, sem markdown, sem texto fora do JSON.`;
 }
@@ -211,6 +238,10 @@ export async function POST(request) {
       ? `DADOS:\n${JSON.stringify(dadosReais)}`
       : `DADOS: indisponíveis. Motivo: ${dadosReais.motivo}`;
 
+    const blocoCriterios = CRITERIOS_MERCADO[mercado]
+      ? `\n\n${CRITERIOS_MERCADO[mercado]}`
+      : '';
+
     const res = await fetch('https://api.anthropic.com/v1/messages', {
       method: 'POST',
       headers: {
@@ -225,6 +256,7 @@ export async function POST(request) {
         messages: [{
           role: 'user',
           content: `Analise "${jogo}" para o mercado "${mercado}". Score mínimo para aprovar: ${min}/100.
+${blocoCriterios}
 
 ${blocoDados}
 
