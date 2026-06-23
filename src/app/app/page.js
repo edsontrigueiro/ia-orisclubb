@@ -75,6 +75,19 @@ export default function App() {
   const [jogosError, setJogosError] = useState(null);
   const [dataJogos, setDataJogos] = useState(null);
 
+  // Saúde do sistema (substitui o "IA Online" estático por uma checagem real)
+  const [health, setHealth] = useState(null);
+
+  useEffect(() => {
+    if (!authReady) return;
+    (async () => {
+      try {
+        const { res } = await authFetch('/api/health');
+        if (res?.ok) setHealth(await res.json());
+      } catch {}
+    })();
+  }, [authReady]);
+
   useEffect(() => {
     const t = getStoredToken();
     if (!t) { router.push('/login'); return; }
@@ -200,7 +213,13 @@ export default function App() {
   const stakeTotal = encerrados.reduce((acc, s) => acc + (s.stake || 0), 0);
   const roi = stakeTotal > 0 ? (lucroTotal / stakeTotal) * 100 : 0;
   const winRate = encerrados.length > 0 ? (greens.length / encerrados.length) * 100 : 0;
-  const lucroAcum = signals.reduce((acc, s, i) => {
+
+  // A API devolve os sinais do mais novo pro mais antigo (pra exibir o
+  // Histórico assim). Pra curva de lucro e drawdown fazerem sentido como
+  // "evolução no tempo", precisam estar do mais ANTIGO pro mais novo —
+  // inverter aqui, sem alterar a ordem usada no Histórico.
+  const encerradosCron = [...encerrados].reverse();
+  const lucroAcum = encerradosCron.reduce((acc, s, i) => {
     const prev = acc[i - 1] || 0;
     return [...acc, prev + (s.lucro_real || 0)];
   }, []);
@@ -209,21 +228,23 @@ export default function App() {
   // verdade com SEU dinheiro, em vez de só confiar no que a IA promete na
   // hora da análise. Ordenado por nº de sinais — mercado com 2 sinais não
   // prova nada ainda, mercado com 20 já mostra um padrão real.
-  const desempenhoPorMercado = (() => {
-    const porMercado = {};
-    for (const s of encerrados) {
-      const m = s.mercado || 'Sem mercado';
-      if (!porMercado[m]) porMercado[m] = { mercado: m, sinais: [], greens: 0, reds: 0, lucroTotal: 0, stakeTotal: 0 };
-      const g = porMercado[m];
+  // Agrupa sinais encerrados por um campo (mercado ou competição) e calcula
+  // win rate / ROI / lucro — mesma lógica servindo as duas quebras abaixo.
+  function agruparDesempenho(lista, campo) {
+    const grupos = {};
+    for (const s of lista) {
+      const chave = s[campo] || 'Não informado';
+      if (!grupos[chave]) grupos[chave] = { chave, sinais: [], greens: 0, reds: 0, lucroTotal: 0, stakeTotal: 0 };
+      const g = grupos[chave];
       g.sinais.push(s);
       if (s.resultado === 'green') g.greens++;
       else if (s.resultado === 'red') g.reds++;
       g.lucroTotal += s.lucro_real || 0;
       g.stakeTotal += s.stake || 0;
     }
-    return Object.values(porMercado)
+    return Object.values(grupos)
       .map(g => ({
-        mercado: g.mercado,
+        chave: g.chave,
         nSinais: g.sinais.length,
         winRate: g.sinais.length ? (g.greens / g.sinais.length) * 100 : 0,
         roi: g.stakeTotal > 0 ? (g.lucroTotal / g.stakeTotal) * 100 : 0,
@@ -232,10 +253,41 @@ export default function App() {
         reds: g.reds,
       }))
       .sort((a, b) => b.nSinais - a.nSinais);
+  }
+
+  const desempenhoPorMercado = agruparDesempenho(encerrados, 'mercado');
+  const desempenhoPorLiga = agruparDesempenho(encerrados, 'competicao');
+
+  // Drawdown máximo: a maior queda entre um pico e o fundo seguinte na curva
+  // de lucro acumulado — a métrica que importa de verdade pra saber se a
+  // banca aguenta uma fase ruim, não só o lucro total no fim. Calculado
+  // sobre "encerrados" diretamente (não sobre "lucroAcum", que é indexado
+  // por "signals" incluindo os "passar" — misturar os dois desalinha índice).
+  const { drawdownMax, sequenciaRedsMax } = (() => {
+    let acumulado = 0, pico = 0, drawdown = 0, sequencia = 0, sequenciaMax = 0;
+    for (const s of encerradosCron) {
+      acumulado += s.lucro_real || 0;
+      if (acumulado > pico) pico = acumulado;
+      const queda = pico - acumulado;
+      if (queda > drawdown) drawdown = queda;
+      if (s.resultado === 'red') { sequencia++; if (sequencia > sequenciaMax) sequenciaMax = sequencia; }
+      else sequencia = 0;
+    }
+    return { drawdownMax: drawdown, sequenciaRedsMax: sequenciaMax };
   })();
 
   const mktInfo = MKTS.find(m => m.label === mkt) || MKTS[0];
   const lucPotencial = odd && stake ? ((parseFloat(stake) * parseFloat(odd)) - parseFloat(stake)) : null;
+
+  // Sugestão de tamanho de entrada conforme a margem do score acima do
+  // mínimo — não é um valor em R$ (não sabemos sua banca), é uma indicação
+  // relativa: scores bem acima do mínimo justificam entrada mais forte,
+  // scores raspando o mínimo pedem mais cautela mesmo "aprovados".
+  const margemScore = result && !result._error ? (result.score - (result._minScore ?? mktInfo.min)) : null;
+  const sizing = margemScore == null ? null
+    : margemScore >= 15 ? { label: 'Entrada reforçada', desc: `Score ${margemScore} pontos acima do mínimo — sinal forte, considere uma entrada até 50% maior que sua entrada padrão.`, color: C.green }
+    : margemScore >= 5  ? { label: 'Entrada padrão', desc: `Score ${margemScore} pontos acima do mínimo — dentro da faixa normal, mantenha sua entrada padrão.`, color: C.orangeGlow }
+    : { label: 'Entrada cautelosa', desc: `Score só ${margemScore} pontos acima do mínimo — margem estreita, considere uma entrada menor que a padrão.`, color: C.red };
 
   if (!authReady) return (
     <div style={{minHeight:'100vh',background:C.bg,display:'flex',alignItems:'center',justifyContent:'center'}}>
@@ -257,10 +309,23 @@ export default function App() {
 
         <div style={{flex:1}}/>
 
-        <div style={{display:'flex',alignItems:'center',gap:'5px',background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,borderRadius:'7px',padding:'5px 11px'}}>
-          <div style={{width:'6px',height:'6px',borderRadius:'50%',background:C.orange,animation:'pulseOrange 2s infinite'}}/>
-          <span style={{fontSize:'10px',fontWeight:700,color:C.orangeGlow,letterSpacing:'.5px',textTransform:'uppercase'}}>IA Online</span>
-        </div>
+        {(() => {
+          const footballOk = health?.football?.ok;
+          const anthropicOk = health?.anthropic?.ok;
+          const tudoOk = footballOk && anthropicOk;
+          const cor = health === null ? C.muted2 : tudoOk ? C.orange : C.red;
+          const corTexto = health === null ? C.muted : tudoOk ? C.orangeGlow : C.red;
+          const label = health === null ? 'Verificando...' : tudoOk ? 'Sistemas OK' : 'Verificar APIs';
+          const titulo = health
+            ? `API-Football: ${footballOk ? 'OK' : (health.football?.motivo || 'falha')}${health.football?.requestsUsadas != null ? ` (${health.football.requestsUsadas}/${health.football.requestsLimite} hoje)` : ''} · Anthropic: ${anthropicOk ? 'configurada' : 'não configurada'}`
+            : 'Checando status das APIs...';
+          return (
+            <div title={titulo} style={{display:'flex',alignItems:'center',gap:'5px',background: tudoOk || health===null ? C.orangeDim : C.redDim,border:`1px solid ${tudoOk || health===null ? C.orangeBorder : 'rgba(255,77,77,.3)'}`,borderRadius:'7px',padding:'5px 11px',cursor:'help'}}>
+              <div style={{width:'6px',height:'6px',borderRadius:'50%',background:cor,animation: health===null ? 'none' : 'pulseOrange 2s infinite'}}/>
+              <span style={{fontSize:'10px',fontWeight:700,color:corTexto,letterSpacing:'.5px',textTransform:'uppercase'}}>{label}</span>
+            </div>
+          );
+        })()}
 
         <div style={{display:'flex',alignItems:'center',gap:'8px',background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'7px',padding:'5px 11px'}}>
           <div style={{width:'26px',height:'26px',borderRadius:'50%',background:C.orange,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'11px',fontWeight:800,color:'#0A0A0A'}}>
@@ -433,6 +498,13 @@ export default function App() {
                             <div style={{fontSize:'14px',color:C.text,fontWeight:600,marginBottom:'2px'}}>{result.evento || jogo}</div>
                             <div style={{fontSize:'12px',color:C.muted}}>{result.competicao}</div>
                             <div style={{fontSize:'12px',color:C.muted,marginTop:'8px',lineHeight:1.6}}>{result.insight}</div>
+                            {result._oddsReais && (
+                              <div style={{marginTop:'8px',fontSize:'11px',color:C.orangeGlow,fontFamily:FONT_MONO}}>
+                                {result._oddsReais.odd_media != null && `Odd real do mercado (${result._oddsReais.valor}): ${result._oddsReais.odd_media}`}
+                                {result._oddsReais.odd_1x_time_a != null && `Odd real — 1X: ${result._oddsReais.odd_1x_time_a} · X2: ${result._oddsReais.odd_x2_time_b}`}
+                                <span style={{color:C.muted2}}> (média de {result._oddsReais.casas_consultadas} casas)</span>
+                              </div>
+                            )}
                           </div>
                         </div>
                       );
@@ -488,6 +560,13 @@ export default function App() {
                         </div>
 
                         {decisao === 'pegar' && (
+                          <>
+                          {sizing && (
+                            <div style={{background:`${sizing.color}14`,border:`1px solid ${sizing.color}40`,borderRadius:'8px',padding:'10px 13px',marginBottom:'12px',display:'flex',alignItems:'flex-start',gap:'8px'}}>
+                              <span style={{fontSize:'10px',fontWeight:800,color:sizing.color,letterSpacing:'1px',textTransform:'uppercase',whiteSpace:'nowrap'}}>{sizing.label}</span>
+                              <span style={{fontSize:'11px',color:C.muted,lineHeight:1.5}}>{sizing.desc}</span>
+                            </div>
+                          )}
                           <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'10px',marginBottom:'14px'}}>
                             <div>
                               <label style={{display:'block',fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1.2px',textTransform:'uppercase',marginBottom:'6px'}}>Stake (R$)</label>
@@ -508,6 +587,7 @@ export default function App() {
                               </div>
                             )}
                           </div>
+                          </>
                         )}
 
                         {decisao && (
@@ -741,12 +821,14 @@ export default function App() {
                 </div>
               ) : (
                 <>
-                  <div className="kpi-grid" style={{display:'grid',gridTemplateColumns:'repeat(4,1fr)',gap:'12px',marginBottom:'20px'}}>
+                  <div className="kpi-grid" style={{display:'grid',gridTemplateColumns:'repeat(6,1fr)',gap:'12px',marginBottom:'20px'}}>
                     {[
                       {label:'ROI',value:`${roi >= 0 ? '+' : ''}${roi.toFixed(1)}%`,color: roi >= 0 ? C.green : C.red,sub:'sobre stake total'},
                       {label:'Lucro Total',value:`${lucroTotal >= 0 ? '+' : ''}R$${fmt(Math.abs(lucroTotal))}`,color: lucroTotal >= 0 ? C.green : C.red,sub:`${encerrados.length} sinais`},
                       {label:'Win Rate',value:`${winRate.toFixed(0)}%`,color: winRate >= 50 ? C.green : C.red,sub:`${greens.length}G / ${reds.length}R`},
                       {label:'Sinais Pegados',value:pegados.length,color:C.text,sub:`${encerrados.length} encerrados`},
+                      {label:'Drawdown Máx.',value:`R$${fmt(drawdownMax)}`,color: drawdownMax > 0 ? C.red : C.muted,sub:'maior queda do pico'},
+                      {label:'Sequência Negativa',value:sequenciaRedsMax,color: sequenciaRedsMax >= 3 ? C.red : C.text,sub:'reds seguidos, máx.'},
                     ].map((k,i) => (
                       <div key={i} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'12px',padding:'16px'}}>
                         <div style={{fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1.2px',textTransform:'uppercase',marginBottom:'8px'}}>{k.label}</div>
@@ -760,7 +842,7 @@ export default function App() {
                     <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',padding:'18px',marginBottom:'16px',position:'relative',overflow:'hidden'}}>
                       <div style={{position:'absolute',top:0,left:0,right:0,height:'1.5px',background: lucroTotal>=0 ? C.green : C.red}}/>
                       <div style={{fontSize:'13px',fontWeight:700,marginBottom:'4px'}}>Curva de Lucro Acumulado</div>
-                      <div style={{fontSize:'11px',color:C.muted,marginBottom:'16px'}}>Evolução sinal a sinal</div>
+                      <div style={{fontSize:'11px',color:C.muted,marginBottom:'16px'}}>Evolução sinal a sinal, do mais antigo pro mais recente</div>
                       <svg viewBox={`0 0 600 140`} style={{width:'100%',height:'140px'}} preserveAspectRatio="none">
                         <defs>
                           <linearGradient id="cg" x1="0" y1="0" x2="0" y2="1">
@@ -796,25 +878,28 @@ export default function App() {
                     </div>
                   )}
 
-                  {/* Desempenho por mercado — a prova real, com dado seu, de
-                      qual mercado de fato performa, em vez de só a promessa
-                      da IA no momento da análise. */}
-                  {desempenhoPorMercado.length > 0 && (
-                    <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',overflow:'hidden',marginBottom:'16px'}}>
-                      <div style={{padding:'13px 16px',borderBottom:`1px solid ${C.border}`,fontSize:'13px',fontWeight:700}}>Desempenho por Mercado</div>
+                  {/* Desempenho por mercado/liga — a prova real, com dado seu, de
+                      o que de fato performa, em vez de só a promessa da IA no
+                      momento da análise. */}
+                  {[
+                    { titulo: 'Desempenho por Mercado', dados: desempenhoPorMercado },
+                    { titulo: 'Desempenho por Liga/Competição', dados: desempenhoPorLiga },
+                  ].map(({ titulo, dados }) => dados.length > 0 && (
+                    <div key={titulo} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',overflow:'hidden',marginBottom:'16px'}}>
+                      <div style={{padding:'13px 16px',borderBottom:`1px solid ${C.border}`,fontSize:'13px',fontWeight:700}}>{titulo}</div>
                       <div style={{overflowX:'auto'}}>
                         <table style={{width:'100%',borderCollapse:'collapse',minWidth:'480px'}}>
                           <thead>
                             <tr style={{background:C.bg4}}>
-                              {['Mercado','Sinais','Win Rate','ROI','Lucro Total'].map(h => (
+                              {[titulo.includes('Liga') ? 'Liga/Competição' : 'Mercado','Sinais','Win Rate','ROI','Lucro Total'].map(h => (
                                 <th key={h} style={{padding:'9px 14px',fontSize:'9.5px',fontWeight:700,letterSpacing:'1.2px',textTransform:'uppercase',color:C.muted2,textAlign:'left',whiteSpace:'nowrap'}}>{h}</th>
                               ))}
                             </tr>
                           </thead>
                           <tbody>
-                            {desempenhoPorMercado.map((m) => (
-                              <tr key={m.mercado} style={{borderBottom:`1px solid ${C.border}`}}>
-                                <td style={{padding:'11px 14px',fontSize:'12.5px',color:C.text,fontWeight:600,whiteSpace:'nowrap'}}>{m.mercado}</td>
+                            {dados.map((m) => (
+                              <tr key={m.chave} style={{borderBottom:`1px solid ${C.border}`}}>
+                                <td style={{padding:'11px 14px',fontSize:'12.5px',color:C.text,fontWeight:600,whiteSpace:'nowrap'}}>{m.chave}</td>
                                 <td style={{padding:'11px 14px',fontSize:'12px',color:C.muted}}>
                                   {m.nSinais} <span style={{color:C.muted2}}>({m.greens}G/{m.reds}R)</span>
                                   {m.nSinais < 10 && <span style={{color:C.orangeGlow,marginLeft:'6px',fontSize:'10px'}}>amostra pequena</span>}
@@ -828,7 +913,7 @@ export default function App() {
                         </table>
                       </div>
                     </div>
-                  )}
+                  ))}
 
                   <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',overflow:'hidden'}}>
                     <div style={{padding:'13px 16px',borderBottom:`1px solid ${C.border}`,fontSize:'13px',fontWeight:700}}>Detalhamento por sinal</div>
@@ -878,6 +963,9 @@ export default function App() {
         @keyframes pulseOrange{0%,100%{box-shadow:0 0 0 0 rgba(255,122,0,.4)}60%{box-shadow:0 0 0 6px rgba(255,122,0,0)}}
         input:focus,textarea:focus{border-color:${C.orangeBorder}!important;box-shadow:0 0 0 3px ${C.orangeDim}}
         button:hover{opacity:.88}
+        @media(max-width:900px){
+          .kpi-grid{grid-template-columns:repeat(3,1fr)!important}
+        }
         @media(max-width:760px){
           .app-shell{flex-direction:column!important}
           .nav-rail{
