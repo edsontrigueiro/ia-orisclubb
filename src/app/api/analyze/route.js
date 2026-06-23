@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
-import { getSupabaseAdmin } from '@/lib/supabase';
+import { getCached, setCached } from '@/lib/cache';
 
 // Log estruturado: facilita achar no Vercel exatamente em qual etapa e
 // confronto algo falhou, em vez de só um texto solto sem contexto.
@@ -32,45 +32,22 @@ async function fetchComRetry(url, opts, tentativas = 2) {
   }
 }
 
-// Cache de análises já feitas (Supabase), TTL de 2h, pra não gastar chamada
-// de API-Football/Anthropic repetindo o mesmo confronto+mercado em sequência.
-// Falha "em silêncio" se a tabela ainda não existir — cache é otimização,
-// nunca deve impedir a análise normal de funcionar.
+// Cache de análises já feitas, TTL de 2h, pra não gastar chamada de
+// API-Football/Anthropic repetindo o mesmo confronto+mercado em sequência.
+// Prefixo "analise::" evita colidir com outras chaves de cache (ex: a grade
+// de jogos do dia, que usa o mesmo armazenamento compartilhado).
 const CACHE_TTL_MS = 2 * 60 * 60 * 1000;
 
 function chaveCache(jogo, mercado) {
-  return `${jogo.trim().toLowerCase()}::${mercado}`;
+  return `analise::${jogo.trim().toLowerCase()}::${mercado}`;
 }
 
 async function lerCache(jogo, mercado) {
-  try {
-    const db = getSupabaseAdmin();
-    const { data, error } = await db
-      .from('analise_cache')
-      .select('payload, created_at')
-      .eq('chave', chaveCache(jogo, mercado))
-      .maybeSingle();
-    if (error || !data) return null;
-    const idade = Date.now() - new Date(data.created_at).getTime();
-    if (idade > CACHE_TTL_MS) return null;
-    return data.payload;
-  } catch (e) {
-    logErro('lerCache', { jogo, mercado }, e);
-    return null;
-  }
+  return getCached(chaveCache(jogo, mercado), CACHE_TTL_MS);
 }
 
 async function salvarCache(jogo, mercado, payload) {
-  try {
-    const db = getSupabaseAdmin();
-    await db.from('analise_cache').upsert({
-      chave: chaveCache(jogo, mercado),
-      payload,
-      created_at: new Date().toISOString(),
-    });
-  } catch (e) {
-    logErro('salvarCache', { jogo, mercado }, e);
-  }
+  return setCached(chaveCache(jogo, mercado), payload);
 }
 
 const MERCADOS = {
