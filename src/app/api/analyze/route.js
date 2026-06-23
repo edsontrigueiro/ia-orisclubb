@@ -52,6 +52,9 @@ const MERCADOS = {
   '-2.5 Gols 1T':   { min: 86 },
   'Lay Empate':     { min: 84 },
   'Under 3.5 Gols': { min: 85 },
+  'BTTS Não':       { min: 88 },
+  '+0.5 Gols 1T':   { min: 85 },
+  '+8.5 Escanteios':{ min: 85 },
 };
 
 // Critérios estatísticos explícitos por mercado, injetados no prompt da IA
@@ -84,6 +87,25 @@ const CRITERIOS_MERCADO = {
 - Em "confrontos_diretos", use o campo "placar_1t" quando presente — H2H com 1T historicamente movimentado (2+ gols no intervalo) entre esses dois times específicos é motivo forte pra reprovar, mesmo com boas médias gerais.
 - Times que costumam "começar devagar" (média de gols marcados no 1T bem menor que a média do jogo completo) favorecem esse mercado — compare "media_gols_marcados_1t" com "media_gols_marcados" geral pra notar esse padrão.
 - Exija amostra mínima de 8 jogos com dado de 1º tempo disponível pra AMBOS os times.`,
+
+  'BTTS Não': `CRITÉRIOS DE ALTA ASSERTIVIDADE — BTTS Não (Ambas as equipes NÃO marcam, ou seja, pelo menos um lado fica a zero):
+- Exija que PELO MENOS UM dos dois times tenha "jogos_sem_marcar_gol" / "jogos_considerados" >= 30% (ataque fraco/inconsistente) OU que o ADVERSÁRIO tenha "jogos_sem_sofrer_gol" / "jogos_considerados" >= 30% (defesa sólida o suficiente pra anular esse ataque). Sem pelo menos um desses dois sinais, REPROVE — não existe motivo estatístico real pra um dos lados ficar a zero.
+- Combine com diferença de qualidade: favorito x zebra tende a deixar a zebra sem marcar mais do que jogos equilibrados, onde os dois lados costumam ter alguma chance.
+- Nos confrontos diretos disponíveis (até 10), conte quantos tiveram os dois times marcando — se isso ocorreu em mais da metade dos H2H recentes (dias_atras < 730), é sinal de que ESSE confronto específico tende a ter os dois marcando, mesmo que as médias gerais sugiram o contrário; reduza o score nesse caso.
+- Exija amostra mínima de 8 jogos disputados na temporada/forma recente para AMBOS os times.`,
+
+  '+0.5 Gols 1T': `CRITÉRIOS DE ALTA ASSERTIVIDADE — +0.5 Gols no PRIMEIRO TEMPO (pelo menos 1 gol no intervalo):
+- Use "primeiro_tempo.pct_jogos_1t_sem_gols" de cada time — é o % dos jogos recentes em que o 1T terminou 0x0. Só aprove se os DOIS times tiverem esse percentual <= 25% (ou seja, em pelo menos 75% dos jogos recentes de cada time houve gol antes do intervalo).
+- Se "primeiro_tempo" for null pra qualquer um dos dois times, mesma ressalva do mercado "-2.5 Gols 1T": é comum em jogos de seleção nacional, mas reduz a confiança — diga isso no insight.
+- Em "confrontos_diretos", use "placar_1t" quando presente: se a maioria dos H2H recentes (dias_atras < 730) teve 1T 0x0, isso é sinal forte contra esse mercado específico, mesmo com boas médias gerais de cada time.
+- Times ofensivos que "começam rápido" (média de gols no 1T próxima ou maior que a média do jogo completo dividida por 2) reforçam esse mercado.
+- Exija amostra mínima de 8 jogos com dado de 1º tempo disponível pra AMBOS os times.`,
+
+  '+8.5 Escanteios': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Over 8.5 Escanteios (total de escanteios do jogo, dos dois times somados, mínimo 9):
+- Os dados trazem "escanteios" dentro de "forma_recente_time_a/b" — é a média de escanteios TOTAIS (dos dois lados, não só desse time) nos jogos recentes em que esse time jogou. Se "escanteios" for null, a API não tem esse dado disponível pra esses jogos (acontece em ligas menores/competições com cobertura de estatística mais pobre) — nesse caso REPROVE por dado insuficiente, não tente estimar escanteios a partir de gols ou posse de bola, que não são bons proxies.
+- Calcule a média combinada: (escanteios_time_a + escanteios_time_b) / 2. Só aprove se essa média combinada for >= 9.5 — margem de segurança sobre a linha de 8.5.
+- Se "escanteios_h2h" estiver disponível (confrontos diretos específicos entre esses dois times), dê peso MAIOR a ele do que à média geral de cada time separado — é o dado mais específico que existe pra esse confronto. Se "escanteios_h2h.media_escanteios" for visivelmente menor que a média combinada geral, reduza o score.
+- Escanteio é um dado mais "ruidoso" que gol (varia mais jogo a jogo) — seja mais conservador aqui do que seria em mercados de gols com números parecidos. Exija amostra mínima de 8 jogos com dado de escanteio disponível pra AMBOS os times.`,
 };
 
 function demoResult(jogo, mercado, motivo) {
@@ -185,6 +207,47 @@ async function buscarHeadToHead(idA, idB, headers) {
     logErro('buscarHeadToHead', { idA, idB }, e);
     return null;
   }
+}
+
+// Escanteios vivem num endpoint SEPARADO do de gols (/fixtures/statistics,
+// por partida individual) — não tem como pegar "forma recente de escanteios"
+// sem buscar jogo a jogo. Mais caro (1 chamada extra por partida), mas é o
+// único jeito de ter dado real em vez de estimativa — usado só quando o
+// mercado analisado for especificamente sobre escanteios.
+async function buscarEscanteiosJogo(fixtureId, headers) {
+  try {
+    const res = await fetchComRetry(
+      `https://v3.football.api-sports.io/fixtures/statistics?fixture=${fixtureId}`,
+      { headers }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const blocos = data?.response || [];
+    let total = 0, achou = false;
+    for (const b of blocos) {
+      const stat = (b.statistics || []).find(s => s.type === 'Corner Kicks');
+      if (stat && stat.value != null) { total += Number(stat.value) || 0; achou = true; }
+    }
+    return achou ? total : null;
+  } catch (e) {
+    logErro('buscarEscanteiosJogo', { fixtureId }, e);
+    return null;
+  }
+}
+
+// Busca escanteios de uma lista de partidas (cada uma com .fixture.id) em
+// paralelo e devolve a média de escanteios TOTAIS (dos dois lados somados)
+// por jogo, ignorando partidas sem esse dado disponível.
+async function mediaEscanteios(fixtures, headers) {
+  const ids = fixtures.map(f => f.fixture?.id).filter(Boolean);
+  if (ids.length === 0) return null;
+  const valores = await Promise.all(ids.map(id => buscarEscanteiosJogo(id, headers)));
+  const validos = valores.filter(v => v != null);
+  if (validos.length === 0) return null;
+  return {
+    jogos_considerados: validos.length,
+    media_escanteios: +(validos.reduce((a, b) => a + b, 0) / validos.length).toFixed(2),
+  };
 }
 
 // Acha o jogo EXATO entre os dois times que está por vir (não o próximo
@@ -305,7 +368,7 @@ function agregarJogos(jogos, teamId) {
   // 1º tempo: a API já manda o placar do intervalo em "score.halftime" de
   // cada jogo — só nunca tínhamos extraído. Sem isso, mercados como "-2.5
   // Gols 1T" não tinham nenhum dado real de 1º tempo pra se basear.
-  let golsMarcados1T = 0, golsSofridos1T = 0, validos1T = 0, jogos1TBaixo = 0;
+  let golsMarcados1T = 0, golsSofridos1T = 0, validos1T = 0, jogos1TBaixo = 0, jogos1TSemGols = 0;
 
   for (const f of jogos) {
     const homeId = f.teams?.home?.id, awayId = f.teams?.away?.id;
@@ -334,6 +397,7 @@ function agregarJogos(jogos, teamId) {
       golsMarcados1T += golsPro1T;
       golsSofridos1T += golsContra1T;
       if (golsPro1T + golsContra1T <= 2) jogos1TBaixo++;
+      if (golsPro1T + golsContra1T === 0) jogos1TSemGols++;
     }
   }
   if (validos === 0) return null;
@@ -355,6 +419,9 @@ function agregarJogos(jogos, teamId) {
       // % dos jogos desse time em que o total de gols no 1T (dos dois lados)
       // foi <= 2 — é literalmente a pergunta que o mercado "-2.5 Gols 1T" faz.
       pct_jogos_1t_total_baixo: +((jogos1TBaixo / validos1T) * 100).toFixed(0),
+      // % dos jogos em que o 1T terminou 0x0 — o inverso é exatamente a
+      // pergunta do mercado "+0.5 Gols 1T" (pelo menos 1 gol no intervalo).
+      pct_jogos_1t_sem_gols: +((jogos1TSemGols / validos1T) * 100).toFixed(0),
     },
   };
 }
@@ -365,7 +432,7 @@ function agregarJogos(jogos, teamId) {
 // partidas recentes em eliminatórias/amistosos. Esta função busca os últimos
 // jogos do time SEM esse travamento de competição, pra servir de base mais
 // robusta quando a amostra "presa" à competição atual for pequena.
-async function buscarFormaRecente(teamId, headers, qtd = 10) {
+async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios = false) {
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures?team=${teamId}&last=${qtd}`,
@@ -392,6 +459,10 @@ async function buscarFormaRecente(teamId, headers, qtd = 10) {
       // Últimos 5 (subconjunto dos mesmos jogos, já ordenados do mais
       // recente) — serve pra detectar mudança de momento vs. os últimos 10.
       ultimos_5: agregarJogos(jogos.slice(0, 5), teamId),
+      // Só busca escanteios (1 chamada extra por partida) quando o mercado
+      // analisado for de fato sobre escanteios — caro pra valer a pena nos
+      // outros mercados que nunca usam esse dado.
+      escanteios: incluirEscanteios ? await mediaEscanteios(jogos, headers) : null,
     };
   } catch (e) {
     logErro('buscarFormaRecente', { teamId }, e);
@@ -464,14 +535,24 @@ async function getFootballData(jogo, mercado) {
   const leagueIdB = proximoJogoB?.league?.id || null;
   const seasonB = proximoJogoB?.league?.season || null;
 
+  // Escanteio é caro (1 chamada extra por partida) — só busca quando o
+  // mercado selecionado de fato precisa desse dado.
+  const precisaEscanteios = mercado === '+8.5 Escanteios';
+
   const [h2h, statsA, statsB, formaA, formaB, fixtureFuturo] = await Promise.all([
     buscarHeadToHead(idA, idB, headers),
     buscarEstatisticasTime(idA, leagueIdA, seasonA, headers),
     buscarEstatisticasTime(idB, leagueIdB, seasonB, headers),
-    buscarFormaRecente(idA, headers),
-    buscarFormaRecente(idB, headers),
+    buscarFormaRecente(idA, headers, 10, precisaEscanteios),
+    buscarFormaRecente(idB, headers, 10, precisaEscanteios),
     buscarFixtureFuturo(idA, idB, headers),
   ]);
+
+  // Escanteios do H2H — média dos confrontos diretos específicos entre
+  // esses dois times, separada da forma recente geral de cada um.
+  const escanteiosH2H = precisaEscanteios && h2h?.length
+    ? await mediaEscanteios(h2h, headers)
+    : null;
 
   const oddsReais = ODDS_MAPA[mercado]
     ? await buscarOddsReais(fixtureFuturo?.id, mercado, headers)
@@ -536,6 +617,9 @@ async function getFootballData(jogo, mercado) {
     // mercado tiver mapeamento — ver ODDS_MAPA). Quando ausente, é só falta
     // de cobertura/dados, não falha — a IA segue estimando como antes.
     odds_mercado_real: oddsReais,
+    // Média de escanteios nos confrontos diretos específicos (só calculado
+    // pro mercado +8.5 Escanteios — null nos demais mercados).
+    escanteios_h2h: escanteiosH2H,
   };
 }
 
