@@ -184,7 +184,11 @@ export default function App() {
         setTimeout(() => {
           setJogo(''); setResult(null); setDecisao(null);
           setOdd(''); setStake(''); setSaved(false);
-        }, 2000);
+          // Vai pro Histórico — é justamente pra acompanhar o desempenho que
+          // o sinal foi salvo; ficar na aba Análises com o formulário limpo
+          // não mostrava nada do que acabou de ser salvo.
+          setTab('historico');
+        }, 1200);
       }
     } catch {} finally { setSaving(false); }
   }
