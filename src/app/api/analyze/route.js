@@ -113,6 +113,56 @@ async function buscarHeadToHead(idA, idB, headers) {
   }
 }
 
+// Estatísticas via /teams/statistics ficam PRESAS à liga+temporada do
+// próximo jogo. Em torneios recém-iniciados (ex: fase de grupos de Copa do
+// Mundo), isso reduz a amostra a 1-2 jogos mesmo que o time tenha dezenas de
+// partidas recentes em eliminatórias/amistosos. Esta função busca os últimos
+// jogos do time SEM esse travamento de competição, pra servir de base mais
+// robusta quando a amostra "presa" à competição atual for pequena.
+async function buscarFormaRecente(teamId, headers, qtd = 10) {
+  try {
+    const res = await fetch(
+      `https://v3.football.api-sports.io/fixtures?team=${teamId}&last=${qtd}`,
+      { headers }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const jogos = (data?.response || []).filter(f => f.fixture?.status?.short === 'FT');
+    if (jogos.length === 0) return null;
+
+    let vitorias = 0, empates = 0, derrotas = 0;
+    let golsMarcados = 0, golsSofridos = 0;
+    let semSofrer = 0, semMarcar = 0;
+
+    for (const f of jogos) {
+      const ehCasa = f.teams?.home?.id === teamId;
+      const golsPro = ehCasa ? f.goals?.home : f.goals?.away;
+      const golsContra = ehCasa ? f.goals?.away : f.goals?.home;
+      if (golsPro == null || golsContra == null) continue;
+      golsMarcados += golsPro;
+      golsSofridos += golsContra;
+      if (golsContra === 0) semSofrer++;
+      if (golsPro === 0) semMarcar++;
+      if (golsPro > golsContra) vitorias++;
+      else if (golsPro === golsContra) empates++;
+      else derrotas++;
+    }
+
+    const n = jogos.length;
+    return {
+      jogos_considerados: n,
+      vitorias, empates, derrotas,
+      media_gols_marcados: +(golsMarcados / n).toFixed(2),
+      media_gols_sofridos: +(golsSofridos / n).toFixed(2),
+      jogos_sem_sofrer_gol: semSofrer,
+      jogos_sem_marcar_gol: semMarcar,
+    };
+  } catch (e) {
+    console.error('buscarFormaRecente exception:', e.message);
+    return null;
+  }
+}
+
 async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
   if (!leagueId || !season) return null;
   try {
@@ -178,10 +228,12 @@ async function getFootballData(jogo) {
   const leagueIdB = proximoJogoB?.league?.id || null;
   const seasonB = proximoJogoB?.league?.season || null;
 
-  const [h2h, statsA, statsB] = await Promise.all([
+  const [h2h, statsA, statsB, formaA, formaB] = await Promise.all([
     buscarHeadToHead(idA, idB, headers),
     buscarEstatisticasTime(idA, leagueIdA, seasonA, headers),
     buscarEstatisticasTime(idB, leagueIdB, seasonB, headers),
+    buscarFormaRecente(idA, headers),
+    buscarFormaRecente(idB, headers),
   ]);
 
   const h2hResumido = (h2h || []).slice(0, 10).map(f => ({
@@ -201,9 +253,18 @@ async function getFootballData(jogo) {
     temporada_time_b: seasonB,
     confrontos_diretos: h2hResumido.length ? h2hResumido : null,
     confrontos_diretos_indisponivel: h2hResumido.length === 0,
+    // Estatísticas presas à competição/temporada do próximo jogo — útil
+    // quando o time já tem amostra grande NESSA competição específica.
     estatisticas_time_a: statsA,
     estatisticas_time_b: statsB,
     estatisticas_indisponiveis: !statsA && !statsB,
+    // Forma recente — últimos jogos do time em QUALQUER competição. Use como
+    // base principal quando "estatisticas_time_a/b" tiver amostra pequena
+    // (ex: torneio recém-iniciado), pois reflete o nível atual do time com
+    // muito mais jogos de apoio.
+    forma_recente_time_a: formaA,
+    forma_recente_time_b: formaB,
+    forma_recente_indisponivel: !formaA && !formaB,
   };
 }
 
@@ -216,6 +277,7 @@ function montarSystemPrompt() {
 4. Os campos "criterios_atendidos" e "criterios_nao_atendidos" devem citar números concretos vindos dos dados (ex: "média de 1.8 gols marcados em 10 jogos"), nunca frases vagas como "boa forma" sem número de apoio.
 5. Se os dados estiverem totalmente indisponíveis, diga isso claramente no "insight" e no "resumo", e ainda assim responda apenas com o JSON pedido.
 6. Se a mensagem do usuário incluir um bloco "CRITÉRIOS ESPECÍFICOS DESTE MERCADO", esses critérios têm prioridade sobre seu julgamento genérico. Eles definem exatamente o que torna esse mercado estatisticamente confiável — verifique cada condição explicitamente contra os dados e cite no "criterios_atendidos"/"criterios_nao_atendidos" quais delas foram ou não satisfeitas, com o número real que comprova. Se uma condição obrigatória desses critérios não for satisfeita, o score deve cair abaixo do mínimo, independentemente de outros sinais favoráveis.
+7. Os dados trazem duas fontes de estatística por time: "estatisticas_time_a/b" (presa à competição/temporada do próximo jogo do time) e "forma_recente_time_a/b" (últimos jogos do time em qualquer competição). Se "estatisticas_time_a/b" tiver amostra pequena (jogos_disputados <= 2) ou estiver nula, use "forma_recente_time_a/b" como base principal da análise — ela tem mais jogos de apoio e reflete melhor o nível atual do time. Cite explicitamente qual das duas fontes você usou e por quê.
 
 Responda SOMENTE com JSON válido, sem markdown, sem texto fora do JSON.`;
 }
