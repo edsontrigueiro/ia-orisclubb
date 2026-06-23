@@ -2,6 +2,7 @@ export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { getCached, setCached } from '@/lib/cache';
+import { fetchComRetry } from '@/lib/fetchUtil';
 
 // 1h de cache: a grade de horários praticamente não muda durante o dia
 // (só em casos raros de adiamento), então não vale gastar 1 chamada de
@@ -31,8 +32,17 @@ export async function GET(request) {
   const { searchParams } = new URL(request.url);
   // Sempre a data de HOJE por padrão — é isso que faz a lista "virar"
   // automaticamente no dia seguinte, sem precisar de nenhum agendamento.
-  const data = searchParams.get('data') ||
+  const dataParam = searchParams.get('data');
+  const data = dataParam ||
     new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+
+  // O parâmetro "data" (se vier de algum cliente, hoje o frontend nunca
+  // manda) vai direto pra URL da API-Football e pra chave de cache — exige
+  // formato YYYY-MM-DD antes de usar, em vez de confiar ciegamente no que
+  // veio na query string.
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+    return NextResponse.json({ error: 'Parâmetro "data" inválido, use YYYY-MM-DD.' }, { status: 400 });
+  }
 
   const chave = `jogos-do-dia::${data}`;
   const cacheado = await getCached(chave, CACHE_TTL_MS);
@@ -42,9 +52,10 @@ export async function GET(request) {
   if (!key) return NextResponse.json({ error: 'FOOTBALL_API_KEY não configurada.' }, { status: 500 });
 
   try {
-    const res = await fetch(
+    const res = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures?date=${data}&timezone=America/Sao_Paulo`,
-      { headers: { 'x-apisports-key': key }, signal: AbortSignal.timeout(15000) }
+      { headers: { 'x-apisports-key': key } },
+      { timeoutMs: 15000 }
     );
     if (!res.ok) {
       console.error(JSON.stringify({ etapa: 'jogos-do-dia', data, status: res.status }));
