@@ -58,10 +58,13 @@ function demoResult(jogo, mercado) {
 }
 
 function parseTimes(jogo) {
-  const partes = jogo.split(/\s+vs\s+|\s+x\s+/i);
+  // Aceita "vs", "vs." (com ponto) e "x" como separador — "vs." sem o ponto
+  // opcional no regex fazia o split falhar silenciosamente, tratando o jogo
+  // inteiro como um único nome de time e o segundo como ausente.
+  const partes = jogo.split(/\s+vs\.?\s+|\s+x\s+/i);
   return {
-    timeA: partes[0]?.trim() || null,
-    timeB: partes[1]?.trim() || null,
+    timeA: partes[0]?.trim().replace(/[.,]+$/, '') || null,
+    timeB: partes[1]?.trim().replace(/[.,]+$/, '') || null,
   };
 }
 
