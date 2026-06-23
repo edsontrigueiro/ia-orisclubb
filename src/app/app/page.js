@@ -66,6 +66,7 @@ export default function App() {
   const [result, setResult] = useState(null);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState(null);
 
   // Histórico state
   const [signals, setSignals] = useState([]);
@@ -141,7 +142,7 @@ export default function App() {
 
   async function analyze() {
     if (!jogo.trim()) return;
-    setAnalyzing(true); setResult(null); setDecisao(null); setSaved(false);
+    setAnalyzing(true); setResult(null); setDecisao(null); setSaved(false); setSaveError(null);
     try {
       const { res, sessionExpired } = await authFetch('/api/analyze', {
         method: 'POST',
@@ -181,6 +182,7 @@ export default function App() {
       if (sessionExpired) { goToLoginExpired(); return; }
       if (res.ok) {
         setSaved(true);
+        setSaveError(null);
         setTimeout(() => {
           setJogo(''); setResult(null); setDecisao(null);
           setOdd(''); setStake(''); setSaved(false);
@@ -189,8 +191,17 @@ export default function App() {
           // não mostrava nada do que acabou de ser salvo.
           setTab('historico');
         }, 1200);
+      } else {
+        // Antes essa falha era engolida em silêncio — o botão só voltava ao
+        // normal sem explicar nada, e você ficava sem saber se salvou ou
+        // não. Agora mostra o erro real (ex: restrição no banco rejeitando
+        // um mercado novo) em vez de fingir que nada aconteceu.
+        const data = await res.json().catch(() => ({}));
+        setSaveError(data?.error || 'Não foi possível salvar o sinal. Tente novamente.');
       }
-    } catch {} finally { setSaving(false); }
+    } catch {
+      setSaveError('Erro de conexão ao salvar o sinal. Tente novamente.');
+    } finally { setSaving(false); }
   }
 
   async function updateResult(id, resultado) {
@@ -607,6 +618,11 @@ export default function App() {
                           }}>
                             {saving ? 'Salvando...' : 'Salvar no histórico →'}
                           </button>
+                        )}
+                        {saveError && (
+                          <div style={{marginTop:'10px',background:C.redDim,border:'1px solid rgba(255,77,77,.3)',borderRadius:'8px',padding:'10px 13px',fontSize:'12px',color:C.red,lineHeight:1.5}}>
+                            ⚠️ {saveError}
+                          </div>
                         )}
                       </div>
                     )}
