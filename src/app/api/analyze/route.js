@@ -68,7 +68,7 @@ const MERCADOS = {
 const CRITERIOS_MERCADO = {
   'Dupla Chance': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Dupla Chance (1X ou X2) no favorito:
 - Só aprove se houver diferença CLARA de qualidade entre os times nos dados: favorito com média de gols marcados >= 1.8 e média de gols sofridos <= 1.2; adversário com média de gols sofridos >= 1.5. Se as médias forem parecidas entre os dois times, isso é um jogo equilibrado — REPROVE, mesmo que um dos nomes "pareça" favorito.
-- Priorize "como_mandante" do Time A e "como_visitante" do Time B (não a média geral) — um time pode ser ótimo em casa e mediano fora, e é justamente o mando de campo que decide esse mercado.
+- Priorize "como_mandante" do Time A e "como_visitante" do Time B (não a média geral) — um time pode ser ótimo em casa e mediano fora, e é justamente o mando de campo que decide esse mercado. EXCEÇÃO: se "modo_copa" for true (torneio internacional, possivelmente em sede neutra), esse mando pode não refletir uma vantagem real de jogar "em casa" — nesse caso baseie-se na forma geral combinada em vez de insistir no recorte mandante/visitante.
 - Nos confrontos diretos disponíveis (até 10), o favorito não deve ter mais de 1 derrota — dê peso extra aos confrontos com "mesmo_mando_atual": true. 2+ derrotas no H2H é sinal de zebra recorrente — reduza o score fortemente.
 - Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times. Menos que isso, reduza o score e diga isso explicitamente em "alertas".
 - Competições eliminatórias / mata-mata (decisão, copa, playoff) têm motivação anormal e mais risco de zebra — se a "liga" indicada nos dados for desse tipo, reduza o score mesmo com favoritismo claro nas médias.`,
@@ -185,7 +185,9 @@ async function buscarHeadToHead(idA, idB, headers) {
 
 // Acha o jogo EXATO entre os dois times que está por vir (não o próximo
 // jogo de qualquer um deles isolado — esse precisa ser especificamente A x
-// B), pra poder buscar a odd real DESSE confronto, não de outro qualquer.
+// B), pra poder buscar a odd real DESSE confronto e identificar a
+// competição exata em que ele está sendo disputado (não a próxima
+// competição genérica de cada time isolado, que pode ser outra).
 async function buscarFixtureFuturo(idA, idB, headers) {
   try {
     const res = await fetchComRetry(
@@ -194,11 +196,33 @@ async function buscarFixtureFuturo(idA, idB, headers) {
     );
     if (!res.ok) return null;
     const data = await res.json();
-    return data?.response?.[0]?.fixture?.id || null;
+    const f = data?.response?.[0];
+    if (!f) return null;
+    return {
+      id: f.fixture?.id || null,
+      ligaNome: f.league?.name || null,
+      round: f.league?.round || null,
+    };
   } catch (e) {
     logErro('buscarFixtureFuturo', { idA, idB }, e);
     return null;
   }
+}
+
+// Liga/copa têm estrutura estatística DIFERENTE: em liga doméstica os
+// mesmos dois times se enfrentam todo ano (H2H rico) e mando de campo é
+// estável; em copa/mata-mata (Copa do Mundo, Libertadores, Champions,
+// Copa do Brasil) o confronto entre exatamente esses dois times pode ser
+// raro ou inédito, e em torneios internacionais o jogo às vezes nem tem
+// mando de campo real (sede neutra). H2H ausente numa copa não é "falta
+// de dado" — é o normal estrutural. Detecta isso por palavras do "round"
+// (fase de grupos, oitavas, etc. só existem em copa) e pelo nome da liga.
+function ehCompeticaoDeCopa(round, ligaNome) {
+  const texto = `${round || ''} ${ligaNome || ''}`.toLowerCase();
+  const padraoCopa = /group stage|grupo|round of|oitavas|quartas|quarter|semi|final|knockout|playoff|preliminary|qualif|copa|cup|champions|libertadores|sudamericana|mundial|world cup/i;
+  const padraoLiga = /regular season|apertura|clausura/i;
+  if (padraoLiga.test(texto) && !padraoCopa.test(texto)) return false;
+  return padraoCopa.test(texto);
 }
 
 // Mapa de mercado interno -> nome do mercado de odds na API-Football e qual
@@ -406,7 +430,7 @@ async function getFootballData(jogo, mercado) {
   const leagueIdB = proximoJogoB?.league?.id || null;
   const seasonB = proximoJogoB?.league?.season || null;
 
-  const [h2h, statsA, statsB, formaA, formaB, fixtureFuturoId] = await Promise.all([
+  const [h2h, statsA, statsB, formaA, formaB, fixtureFuturo] = await Promise.all([
     buscarHeadToHead(idA, idB, headers),
     buscarEstatisticasTime(idA, leagueIdA, seasonA, headers),
     buscarEstatisticasTime(idB, leagueIdB, seasonB, headers),
@@ -416,8 +440,15 @@ async function getFootballData(jogo, mercado) {
   ]);
 
   const oddsReais = ODDS_MAPA[mercado]
-    ? await buscarOddsReais(fixtureFuturoId, mercado, headers)
+    ? await buscarOddsReais(fixtureFuturo?.id, mercado, headers)
     : null;
+
+  // Prioriza a competição do confronto EXATO (achado via H2H) pra decidir
+  // se é modo copa; se não achou esse confronto específico (ex: chaveamento
+  // ainda não definido), usa o próximo jogo do time A como aproximação.
+  const modoCopa = fixtureFuturo
+    ? ehCompeticaoDeCopa(fixtureFuturo.round, fixtureFuturo.ligaNome)
+    : ehCompeticaoDeCopa(proximoJogoA?.league?.round, proximoJogoA?.league?.name);
 
   const h2hResumido = (h2h || [])
     .slice(0, 10)
@@ -445,6 +476,11 @@ async function getFootballData(jogo, mercado) {
     liga_time_b: proximoJogoB?.league?.name || null,
     temporada_time_a: seasonA,
     temporada_time_b: seasonB,
+    // true = competição de copa/mata-mata (Copa do Mundo, Libertadores,
+    // Champions, Copa do Brasil etc.) — nessas, H2H raro/ausente e amostra
+    // pequena NA competição atual são NORMAIS, não falha de dado. Ver
+    // regra correspondente no prompt.
+    modo_copa: modoCopa,
     confrontos_diretos: h2hResumido.length ? h2hResumido : null,
     confrontos_diretos_indisponivel: h2hResumido.length === 0,
     // Estatísticas presas à competição/temporada do próximo jogo — útil
@@ -479,6 +515,11 @@ function montarSystemPrompt() {
 8. Convenção do confronto: no formato "Time A vs Time B", Time A é o mandante (joga em casa) e Time B é o visitante nesse jogo específico. "forma_recente_time_a/b" traz subcampos "como_mandante" e "como_visitante" — priorize "como_mandante" do Time A e "como_visitante" do Time B sobre a média geral misturada, pois mando de campo é um efeito real no futebol. Em "confrontos_diretos", dê mais peso aos jogos com "mesmo_mando_atual": true (mesmo mando de campo do confronto atual) do que aos com mando invertido. Se "ultimos_5" divergir muito de "ultimos_10"/geral (ex: time que vinha bem mas piorou nos últimos 5, ou vice-versa), trate isso como mudança de momento e mencione explicitamente no "insight" — não ignore a tendência recente em favor só da média.
 9. Em "confrontos_diretos", cada item já vem com "dias_atras" calculado. Pese MUITO mais os confrontos com menos de ~365 dias do que os mais antigos — times mudam de elenco, técnico e nível de um ano pro outro, então um 5-0 de 3 anos atrás não diz quase nada sobre o jogo de hoje. Se a maioria dos confrontos diretos disponíveis tiver mais de 2 anos (730 dias), trate o H2H como pouco confiável e diga isso no "insight", em vez de usá-lo com o mesmo peso de um H2H recente.
 10. Se "odds_mercado_real" estiver presente, é a odd REAL cotada pelo mercado de apostas pra esse confronto específico (média entre casas) — não uma estimativa. Compare com a "probabilidade_real" que você calculou: se sua probabilidade implica uma odd "justa" bem menor que a odd real oferecida (ex: você calcula 85% de chance, que equivale a odd justa ~1.18, mas o mercado paga 1.35), isso é sinal de valor — mencione no "resumo". Se a odd real estiver MENOR do que sua probabilidade justificaria, isso é sinal de que o mercado está "caro" pra esse lado — também mencione. Use o campo "odds_estimada" pra sua própria estimativa de qualquer forma; quando "odds_mercado_real" existir, cite o número real explicitamente no "insight" também, não só o seu.
+11. Se "modo_copa" for true, esse confronto é de uma competição de copa/mata-mata (Copa do Mundo, Libertadores, Champions, Copa do Brasil, etc.), e isso muda o que conta como "dado insuficiente":
+    - "confrontos_diretos_indisponivel": true em modo copa é NORMAL — times de chaves/grupos/confederações diferentes raramente ou nunca se enfrentaram antes. NÃO reduza o score só por isso, como faria numa liga doméstica. Só penalize H2H ausente se outras fontes de dado TAMBÉM estiverem fracas.
+    - "estatisticas_time_a/b" com amostra pequena (poucos jogos NESSA edição específica do torneio) também é normal, principalmente em fases iniciais. Em modo copa, prefira SEMPRE "forma_recente_time_a/b" como base principal, com confiança normal — não trate a ausência de estatística "presa ao torneio" como um problema a mais.
+    - Mando de campo é menos confiável em modo copa, especialmente torneios internacionais de seleções em sede neutra (nem A nem B jogam "em casa" de fato). Dê menos peso a "como_mandante"/"como_visitante" e mais à forma geral combinada, a menos que fique claro pelos dados que um dos times é o anfitrião do torneio.
+    - Resumindo: em modo copa, julgue principalmente pela "forma_recente" geral de cada time e pelo "ultimos_5" — não reprove automaticamente só porque H2H e estatísticas do torneio estão vazios, isso é esperado nesse contexto.
 
 Responda SOMENTE com JSON válido, sem markdown, sem texto fora do JSON.`;
 }
