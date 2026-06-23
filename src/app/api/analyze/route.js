@@ -183,12 +183,91 @@ async function buscarHeadToHead(idA, idB, headers) {
   }
 }
 
-// Estatísticas via /teams/statistics ficam PRESAS à liga+temporada do
-// próximo jogo. Em torneios recém-iniciados (ex: fase de grupos de Copa do
-// Mundo), isso reduz a amostra a 1-2 jogos mesmo que o time tenha dezenas de
-// partidas recentes em eliminatórias/amistosos. Esta função busca os últimos
-// jogos do time SEM esse travamento de competição, pra servir de base mais
-// robusta quando a amostra "presa" à competição atual for pequena.
+// Acha o jogo EXATO entre os dois times que está por vir (não o próximo
+// jogo de qualquer um deles isolado — esse precisa ser especificamente A x
+// B), pra poder buscar a odd real DESSE confronto, não de outro qualquer.
+async function buscarFixtureFuturo(idA, idB, headers) {
+  try {
+    const res = await fetchComRetry(
+      `https://v3.football.api-sports.io/fixtures/headtohead?h2h=${idA}-${idB}&next=1`,
+      { headers, signal: AbortSignal.timeout(8000) }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    return data?.response?.[0]?.fixture?.id || null;
+  } catch (e) {
+    logErro('buscarFixtureFuturo', { idA, idB }, e);
+    return null;
+  }
+}
+
+// Mapa de mercado interno -> nome do mercado de odds na API-Football e qual
+// "value" extrair. Só mercados com correspondência INEQUÍVOCA com um mercado
+// padrão de casa de apostas entram aqui — "Lay 2x2" e "Lay Empate" não têm
+// equivalente direto e ambíguo seria pior que não comparar.
+const ODDS_MAPA = {
+  '+1.5 Gols':      { bet: 'Goals Over/Under', value: 'Over 1.5' },
+  '+0.5 Gols':      { bet: 'Goals Over/Under', value: 'Over 0.5' },
+  'Under 3.5 Gols': { bet: 'Goals Over/Under', value: 'Under 3.5' },
+  'Dupla Chance':   { bet: 'Double Chance', value: null }, // valor varia conforme quem é o favorito, tratado abaixo
+};
+
+// Busca a odd real de mercado pro confronto, se o plano da API-Football
+// cobrir o endpoint /odds. Se não cobrir (403/erro) ou não achar o mercado
+// específico na resposta, retorna null silenciosamente — nunca trava a
+// análise por causa disso, é só um dado extra quando disponível.
+async function buscarOddsReais(fixtureId, mercado, headers) {
+  const mapa = ODDS_MAPA[mercado];
+  if (!fixtureId || !mapa) return null;
+  try {
+    const res = await fetchComRetry(
+      `https://v3.football.api-sports.io/odds?fixture=${fixtureId}`,
+      { headers, signal: AbortSignal.timeout(8000) }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const bookmakers = data?.response?.[0]?.bookmakers || [];
+    if (bookmakers.length === 0) return null;
+
+    // Double Chance: devolve as duas opções relevantes (Home/Draw e
+    // Draw/Away) e deixa a IA decidir qual bate com o favorito que ELA
+    // identificou — o código não sabe ainda quem é favorito nesse ponto.
+    if (mapa.bet === 'Double Chance') {
+      const valores = { 'Home/Draw': [], 'Draw/Away': [] };
+      for (const bm of bookmakers) {
+        const aposta = bm.bets?.find(b => b.name === 'Double Chance');
+        for (const v of (aposta?.values || [])) {
+          if (valores[v.value]) valores[v.value].push(parseFloat(v.odd));
+        }
+      }
+      const media = arr => arr.length ? +(arr.reduce((a, b) => a + b, 0) / arr.length).toFixed(2) : null;
+      const homeDraw = media(valores['Home/Draw']);
+      const drawAway = media(valores['Draw/Away']);
+      if (homeDraw == null && drawAway == null) return null;
+      return { mercado, odd_1x_time_a: homeDraw, odd_x2_time_b: drawAway, casas_consultadas: bookmakers.length };
+    }
+
+    // Goals Over/Under: pega a média da odd pro valor específico (ex:
+    // "Over 1.5") entre todas as casas que oferecem esse mercado.
+    const valores = [];
+    for (const bm of bookmakers) {
+      const aposta = bm.bets?.find(b => b.name === mapa.bet);
+      const v = aposta?.values?.find(v => v.value === mapa.value);
+      if (v) valores.push(parseFloat(v.odd));
+    }
+    if (valores.length === 0) return null;
+    return {
+      mercado,
+      valor: mapa.value,
+      odd_media: +(valores.reduce((a, b) => a + b, 0) / valores.length).toFixed(2),
+      casas_consultadas: valores.length,
+    };
+  } catch (e) {
+    logErro('buscarOddsReais', { fixtureId, mercado }, e);
+    return null;
+  }
+}
+
 // Agrega uma lista de jogos (já filtrada) na perspectiva de um time
 // específico — usado pra forma geral, só em casa, só fora, e últimos 5.
 function agregarJogos(jogos, teamId) {
@@ -222,6 +301,12 @@ function agregarJogos(jogos, teamId) {
   };
 }
 
+// Estatísticas via /teams/statistics ficam PRESAS à liga+temporada do
+// próximo jogo. Em torneios recém-iniciados (ex: fase de grupos de Copa do
+// Mundo), isso reduz a amostra a 1-2 jogos mesmo que o time tenha dezenas de
+// partidas recentes em eliminatórias/amistosos. Esta função busca os últimos
+// jogos do time SEM esse travamento de competição, pra servir de base mais
+// robusta quando a amostra "presa" à competição atual for pequena.
 async function buscarFormaRecente(teamId, headers, qtd = 10) {
   try {
     const res = await fetchComRetry(
@@ -286,7 +371,7 @@ async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
 // Monta um pacote de dados reais sobre o confronto. Retorna sempre um objeto
 // explícito indicando o que foi possível obter, para o prompt nunca tratar
 // dado ausente como dado real.
-async function getFootballData(jogo) {
+async function getFootballData(jogo, mercado) {
   const key = process.env.FOOTBALL_API_KEY;
   if (!key) {
     return { disponivel: false, motivo: 'FOOTBALL_API_KEY não configurada.' };
@@ -321,13 +406,18 @@ async function getFootballData(jogo) {
   const leagueIdB = proximoJogoB?.league?.id || null;
   const seasonB = proximoJogoB?.league?.season || null;
 
-  const [h2h, statsA, statsB, formaA, formaB] = await Promise.all([
+  const [h2h, statsA, statsB, formaA, formaB, fixtureFuturoId] = await Promise.all([
     buscarHeadToHead(idA, idB, headers),
     buscarEstatisticasTime(idA, leagueIdA, seasonA, headers),
     buscarEstatisticasTime(idB, leagueIdB, seasonB, headers),
     buscarFormaRecente(idA, headers),
     buscarFormaRecente(idB, headers),
+    buscarFixtureFuturo(idA, idB, headers),
   ]);
+
+  const oddsReais = ODDS_MAPA[mercado]
+    ? await buscarOddsReais(fixtureFuturoId, mercado, headers)
+    : null;
 
   const h2hResumido = (h2h || [])
     .slice(0, 10)
@@ -369,6 +459,10 @@ async function getFootballData(jogo) {
     forma_recente_time_a: formaA,
     forma_recente_time_b: formaB,
     forma_recente_indisponivel: !formaA && !formaB,
+    // Odd real de mercado (se o plano da API-Football cobrir /odds e o
+    // mercado tiver mapeamento — ver ODDS_MAPA). Quando ausente, é só falta
+    // de cobertura/dados, não falha — a IA segue estimando como antes.
+    odds_mercado_real: oddsReais,
   };
 }
 
@@ -384,6 +478,7 @@ function montarSystemPrompt() {
 7. Os dados trazem duas fontes de estatística por time: "estatisticas_time_a/b" (presa à competição/temporada do próximo jogo do time) e "forma_recente_time_a/b" (últimos jogos do time em qualquer competição). Se "estatisticas_time_a/b" tiver amostra pequena (jogos_disputados <= 2) ou estiver nula, use "forma_recente_time_a/b" como base principal da análise — ela tem mais jogos de apoio e reflete melhor o nível atual do time. Cite explicitamente qual das duas fontes você usou e por quê.
 8. Convenção do confronto: no formato "Time A vs Time B", Time A é o mandante (joga em casa) e Time B é o visitante nesse jogo específico. "forma_recente_time_a/b" traz subcampos "como_mandante" e "como_visitante" — priorize "como_mandante" do Time A e "como_visitante" do Time B sobre a média geral misturada, pois mando de campo é um efeito real no futebol. Em "confrontos_diretos", dê mais peso aos jogos com "mesmo_mando_atual": true (mesmo mando de campo do confronto atual) do que aos com mando invertido. Se "ultimos_5" divergir muito de "ultimos_10"/geral (ex: time que vinha bem mas piorou nos últimos 5, ou vice-versa), trate isso como mudança de momento e mencione explicitamente no "insight" — não ignore a tendência recente em favor só da média.
 9. Em "confrontos_diretos", cada item já vem com "dias_atras" calculado. Pese MUITO mais os confrontos com menos de ~365 dias do que os mais antigos — times mudam de elenco, técnico e nível de um ano pro outro, então um 5-0 de 3 anos atrás não diz quase nada sobre o jogo de hoje. Se a maioria dos confrontos diretos disponíveis tiver mais de 2 anos (730 dias), trate o H2H como pouco confiável e diga isso no "insight", em vez de usá-lo com o mesmo peso de um H2H recente.
+10. Se "odds_mercado_real" estiver presente, é a odd REAL cotada pelo mercado de apostas pra esse confronto específico (média entre casas) — não uma estimativa. Compare com a "probabilidade_real" que você calculou: se sua probabilidade implica uma odd "justa" bem menor que a odd real oferecida (ex: você calcula 85% de chance, que equivale a odd justa ~1.18, mas o mercado paga 1.35), isso é sinal de valor — mencione no "resumo". Se a odd real estiver MENOR do que sua probabilidade justificaria, isso é sinal de que o mercado está "caro" pra esse lado — também mencione. Use o campo "odds_estimada" pra sua própria estimativa de qualquer forma; quando "odds_mercado_real" existir, cite o número real explicitamente no "insight" também, não só o seu.
 
 Responda SOMENTE com JSON válido, sem markdown, sem texto fora do JSON.`;
 }
@@ -413,7 +508,7 @@ export async function POST(request) {
     if (!apiKey) return NextResponse.json(demoResult(jogo, mercado));
 
     const min = MERCADOS[mercado].min;
-    const dadosReais = await getFootballData(jogo);
+    const dadosReais = await getFootballData(jogo, mercado);
 
     const blocoDados = dadosReais.disponivel
       ? `DADOS:\n${JSON.stringify(dadosReais)}`
@@ -460,6 +555,7 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
     const result = JSON.parse(text);
     result._minScore = min;
     result._dadosReaisUsados = dadosReais.disponivel;
+    result._oddsReais = dadosReais.odds_mercado_real || null;
 
     // Só cacheia análise real (nunca modo demo, nunca erro).
     await salvarCache(jogo, mercado, result);
