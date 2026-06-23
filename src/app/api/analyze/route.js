@@ -123,6 +123,9 @@ function demoResult(jogo, mercado, motivo) {
 }
 
 function parseTimes(jogo) {
+  // Defesa extra: mesmo que o handler já valide tipo antes de chamar aqui,
+  // não custa blindar a função em si contra input não-string.
+  if (typeof jogo !== 'string') return { timeA: null, timeB: null };
   // Aceita "vs", "vs." (com ponto) e "x" como separador — "vs." sem o ponto
   // opcional no regex fazia o split falhar silenciosamente, tratando o jogo
   // inteiro como um único nome de time e o segundo como ausente.
@@ -320,7 +323,12 @@ function agregarJogos(jogos, teamId) {
   let golsMarcados1T = 0, golsSofridos1T = 0, validos1T = 0, jogos1TBaixo = 0;
 
   for (const f of jogos) {
-    const ehCasa = f.teams?.home?.id === teamId;
+    const homeId = f.teams?.home?.id, awayId = f.teams?.away?.id;
+    // Se nenhum dos dois lados bate com o time que estamos agregando, o
+    // registro está malformado/incompleto — pular em vez de assumir "fora"
+    // por padrão e atribuir um placar que pode nem ser desse time.
+    if (homeId !== teamId && awayId !== teamId) continue;
+    const ehCasa = homeId === teamId;
     const golsPro = ehCasa ? f.goals?.home : f.goals?.away;
     const golsContra = ehCasa ? f.goals?.away : f.goals?.home;
     if (golsPro == null || golsContra == null) continue;
@@ -579,8 +587,8 @@ export async function POST(request) {
 
   try {
     ({ jogo, mercado } = await request.json());
-    if (!jogo || !mercado)
-      return NextResponse.json({ error: 'Jogo e mercado obrigatórios.' }, { status: 400 });
+    if (!jogo || !mercado || typeof jogo !== 'string' || typeof mercado !== 'string')
+      return NextResponse.json({ error: 'Jogo e mercado obrigatórios (texto).' }, { status: 400 });
     if (!MERCADOS[mercado])
       return NextResponse.json({ error: 'Mercado inválido.' }, { status: 400 });
 
