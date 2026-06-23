@@ -329,16 +329,23 @@ async function getFootballData(jogo) {
     buscarFormaRecente(idB, headers),
   ]);
 
-  const h2hResumido = (h2h || []).slice(0, 10).map(f => ({
-    data: f.fixture?.date,
-    casa: f.teams?.home?.name,
-    fora: f.teams?.away?.name,
-    placar: `${f.goals?.home ?? '?'}-${f.goals?.away ?? '?'}`,
-    // Indica se nesse confronto passado o mando de campo foi o mesmo do
-    // jogo analisado agora (time A em casa) — confronto direto com o mesmo
-    // mando vale mais como sinal do que um com os lados invertidos.
-    mesmo_mando_atual: f.teams?.home?.id === idA,
-  }));
+  const h2hResumido = (h2h || [])
+    .slice(0, 10)
+    .sort((a, b) => new Date(b.fixture?.date) - new Date(a.fixture?.date))
+    .map(f => ({
+      data: f.fixture?.date,
+      // Calculado aqui no servidor, não deixado pra IA inferir da data —
+      // tirar a IA de fazer aritmética de datas evita erro bobo e deixa a
+      // instrução de "pesar o mais recente" objetiva e verificável.
+      dias_atras: f.fixture?.date ? Math.round((Date.now() - new Date(f.fixture.date).getTime()) / 86400000) : null,
+      casa: f.teams?.home?.name,
+      fora: f.teams?.away?.name,
+      placar: `${f.goals?.home ?? '?'}-${f.goals?.away ?? '?'}`,
+      // Indica se nesse confronto passado o mando de campo foi o mesmo do
+      // jogo analisado agora (time A em casa) — confronto direto com o mesmo
+      // mando vale mais como sinal do que um com os lados invertidos.
+      mesmo_mando_atual: f.teams?.home?.id === idA,
+    }));
 
   return {
     disponivel: true,
@@ -376,6 +383,7 @@ function montarSystemPrompt() {
 6. Se a mensagem do usuário incluir um bloco "CRITÉRIOS ESPECÍFICOS DESTE MERCADO", esses critérios têm prioridade sobre seu julgamento genérico. Eles definem exatamente o que torna esse mercado estatisticamente confiável — verifique cada condição explicitamente contra os dados e cite no "criterios_atendidos"/"criterios_nao_atendidos" quais delas foram ou não satisfeitas, com o número real que comprova. Se uma condição obrigatória desses critérios não for satisfeita, o score deve cair abaixo do mínimo, independentemente de outros sinais favoráveis.
 7. Os dados trazem duas fontes de estatística por time: "estatisticas_time_a/b" (presa à competição/temporada do próximo jogo do time) e "forma_recente_time_a/b" (últimos jogos do time em qualquer competição). Se "estatisticas_time_a/b" tiver amostra pequena (jogos_disputados <= 2) ou estiver nula, use "forma_recente_time_a/b" como base principal da análise — ela tem mais jogos de apoio e reflete melhor o nível atual do time. Cite explicitamente qual das duas fontes você usou e por quê.
 8. Convenção do confronto: no formato "Time A vs Time B", Time A é o mandante (joga em casa) e Time B é o visitante nesse jogo específico. "forma_recente_time_a/b" traz subcampos "como_mandante" e "como_visitante" — priorize "como_mandante" do Time A e "como_visitante" do Time B sobre a média geral misturada, pois mando de campo é um efeito real no futebol. Em "confrontos_diretos", dê mais peso aos jogos com "mesmo_mando_atual": true (mesmo mando de campo do confronto atual) do que aos com mando invertido. Se "ultimos_5" divergir muito de "ultimos_10"/geral (ex: time que vinha bem mas piorou nos últimos 5, ou vice-versa), trate isso como mudança de momento e mencione explicitamente no "insight" — não ignore a tendência recente em favor só da média.
+9. Em "confrontos_diretos", cada item já vem com "dias_atras" calculado. Pese MUITO mais os confrontos com menos de ~365 dias do que os mais antigos — times mudam de elenco, técnico e nível de um ano pro outro, então um 5-0 de 3 anos atrás não diz quase nada sobre o jogo de hoje. Se a maioria dos confrontos diretos disponíveis tiver mais de 2 anos (730 dias), trate o H2H como pouco confiável e diga isso no "insight", em vez de usá-lo com o mesmo peso de um H2H recente.
 
 Responda SOMENTE com JSON válido, sem markdown, sem texto fora do JSON.`;
 }
