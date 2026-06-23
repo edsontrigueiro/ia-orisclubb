@@ -14,6 +14,9 @@ const MKTS = [
   { id:'menos25',    label:'-2.5 Gols 1T',   min:86 },
   { id:'layempate',  label:'Lay Empate',     min:84 },
   { id:'under35',    label:'Under 3.5 Gols', min:85 },
+  { id:'bttsnao',    label:'BTTS Não',       min:88 },
+  { id:'mais05_1t',  label:'+0.5 Gols 1T',   min:85 },
+  { id:'escanteios', label:'+8.5 Escanteios',min:85 },
 ];
 
 const NAV = [
