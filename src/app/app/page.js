@@ -6,12 +6,14 @@ import { authFetch, getStoredToken, getStoredUser, clearSession } from '@/lib/cl
 import { C, FONT_DISPLAY, FONT_BODY, FONT_MONO } from '@/lib/theme';
 
 const MKTS = [
-  { id:'lay2x2',   label:'Lay 2x2',      min:82 },
-  { id:'layzebra', label:'Lay Zebra',     min:85 },
-  { id:'mais15',   label:'+1.5 Gols',    min:83 },
-  { id:'mais05',   label:'+0.5 Gols',    min:88 },
-  { id:'tenis',    label:'Tênis',         min:84 },
-  { id:'menos25',  label:'-2.5 Gols 1T', min:86 },
+  { id:'lay2x2',     label:'Lay 2x2',        min:82 },
+  { id:'duplachance',label:'Dupla Chance',   min:86 },
+  { id:'mais15',     label:'+1.5 Gols',      min:83 },
+  { id:'mais05',     label:'+0.5 Gols',      min:88 },
+  { id:'tenis',      label:'Tênis',           min:84 },
+  { id:'menos25',    label:'-2.5 Gols 1T',   min:86 },
+  { id:'layempate',  label:'Lay Empate',     min:84 },
+  { id:'under35',    label:'Under 3.5 Gols', min:85 },
 ];
 
 const NAV = [
