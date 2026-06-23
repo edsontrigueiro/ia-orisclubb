@@ -17,9 +17,10 @@ const MKTS = [
 ];
 
 const NAV = [
-  { id:'analises',   label:'Análises',    icon:'M22 12h-4l-3 9L9 3l-3 9H2' },
-  { id:'historico',  label:'Histórico',   icon:'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z' },
-  { id:'desempenho', label:'Desempenho',  icon:'M23 6 13.5 15.5 8.5 10.5 1 18 M17 6 23 6 23 12' },
+  { id:'analises',    label:'Análises',     icon:'M22 12h-4l-3 9L9 3l-3 9H2' },
+  { id:'jogosdodia',  label:'Jogos do Dia', icon:'M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z' },
+  { id:'historico',   label:'Histórico',    icon:'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z' },
+  { id:'desempenho',  label:'Desempenho',   icon:'M23 6 13.5 15.5 8.5 10.5 1 18 M17 6 23 6 23 12' },
 ];
 
 function fmt(v) { return v?.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) ?? '—'; }
@@ -68,6 +69,12 @@ export default function App() {
   const [loadingSignals, setLoadingSignals] = useState(false);
   const [updatingId, setUpdatingId] = useState(null);
 
+  // Jogos do dia state
+  const [jogosDoDia, setJogosDoDia] = useState([]);
+  const [loadingJogos, setLoadingJogos] = useState(false);
+  const [jogosError, setJogosError] = useState(null);
+  const [dataJogos, setDataJogos] = useState(null);
+
   useEffect(() => {
     const t = getStoredToken();
     if (!t) { router.push('/login'); return; }
@@ -78,6 +85,7 @@ export default function App() {
   useEffect(() => {
     if (authReady && tab === 'historico') loadSignals();
     if (authReady && tab === 'desempenho') loadSignals();
+    if (authReady && tab === 'jogosdodia' && jogosDoDia.length === 0 && !jogosError) loadJogosDoDia();
   }, [tab, authReady]);
 
   function goToLoginExpired() {
@@ -94,6 +102,26 @@ export default function App() {
       if (data.signals) setSignals(data.signals);
     } catch {} finally { setLoadingSignals(false); }
   }, []);
+
+  const loadJogosDoDia = useCallback(async () => {
+    setLoadingJogos(true); setJogosError(null);
+    try {
+      const { res, sessionExpired } = await authFetch('/api/jogos-do-dia');
+      if (sessionExpired) { goToLoginExpired(); return; }
+      const data = await res.json();
+      if (!res.ok) { setJogosError(data?.error || 'Não foi possível carregar os jogos do dia.'); return; }
+      setJogosDoDia(data.jogos || []);
+      setDataJogos(data.data || null);
+    } catch { setJogosError('Erro de conexão ao buscar os jogos do dia.'); }
+    finally { setLoadingJogos(false); }
+  }, []);
+
+  // Clique num jogo da grade já leva pra Análises com o confronto preenchido.
+  function analisarJogoDaGrade(timeA, timeB) {
+    setJogo(`${timeA} vs ${timeB}`);
+    setResult(null); setDecisao(null); setSaved(false);
+    setTab('analises');
+  }
 
   async function analyze() {
     if (!jogo.trim()) return;
@@ -230,8 +258,8 @@ export default function App() {
               fontSize:'10px',fontWeight: tab===t.id ? 700 : 500,
               cursor:'pointer',fontFamily:'inherit',transition:'all .16s',
             }}>
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                <polyline points={t.icon}/>
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d={t.icon}/>
               </svg>
               {t.label}
             </button>
@@ -475,6 +503,103 @@ export default function App() {
                   </div>
                 )}
               </div>
+            </div>
+          )}
+
+          {/* ════ JOGOS DO DIA ════ */}
+          {tab === 'jogosdodia' && (
+            <div>
+              <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'20px',flexWrap:'wrap',gap:'10px'}}>
+                <div>
+                  <div style={{fontSize:'21px',fontWeight:800,letterSpacing:'-.3px',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Jogos do Dia</div>
+                  <div style={{fontSize:'13px',color:C.muted}}>
+                    {dataJogos ? new Date(dataJogos + 'T12:00:00').toLocaleDateString('pt-BR', { weekday:'long', day:'2-digit', month:'long' }) : 'Grade completa, atualiza sozinha a cada dia'}
+                    {jogosDoDia.length > 0 && ` · ${jogosDoDia.length} jogos`}
+                  </div>
+                </div>
+                <button onClick={loadJogosDoDia} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',color:C.muted,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:'6px'}}>
+                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.49-8.18"/></svg>
+                  Atualizar
+                </button>
+              </div>
+
+              {loadingJogos ? (
+                <div style={{display:'flex',flexDirection:'column',alignItems:'center',gap:'14px',padding:'48px'}}>
+                  <div style={{width:'40px',height:'40px',border:`3px solid ${C.orangeDim}`,borderTopColor:C.orange,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>
+                  <div style={{fontSize:'13px',color:C.muted}}>Buscando a grade do dia...</div>
+                </div>
+              ) : jogosError ? (
+                <div style={{background:C.redDim,border:`1px solid rgba(255,77,77,.35)`,borderRadius:'14px',padding:'14px 16px',display:'flex',alignItems:'flex-start',gap:'10px'}}>
+                  <span style={{fontSize:'18px',lineHeight:1}}>⚠️</span>
+                  <div>
+                    <div style={{fontSize:'13px',fontWeight:800,color:C.red,letterSpacing:'.3px'}}>FALHA AO CARREGAR</div>
+                    <div style={{fontSize:'12px',color:C.muted,marginTop:'3px',lineHeight:1.5}}>{jogosError}</div>
+                  </div>
+                </div>
+              ) : jogosDoDia.length === 0 ? (
+                <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'14px',padding:'48px 24px',textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:'14px'}}>
+                  <div style={{width:'52px',height:'52px',borderRadius:'50%',background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,display:'flex',alignItems:'center',justifyContent:'center'}}>
+                    <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={C.orange} strokeWidth="1.5"><path d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>
+                  </div>
+                  <div style={{fontSize:'15px',fontWeight:700,fontFamily:FONT_DISPLAY}}>Nenhum jogo encontrado pra hoje</div>
+                  <div style={{fontSize:'13px',color:C.muted,maxWidth:'280px',lineHeight:1.7}}>Pode ser dia de pausa nas principais ligas, ou a API ainda não publicou a grade.</div>
+                </div>
+              ) : (
+                (() => {
+                  // Agrupa por liga mantendo a ordem que já veio do backend
+                  // (ligas prioritárias primeiro, resto em ordem alfabética).
+                  const grupos = [];
+                  for (const j of jogosDoDia) {
+                    const ultimo = grupos[grupos.length - 1];
+                    if (ultimo && ultimo.liga === j.liga) ultimo.jogos.push(j);
+                    else grupos.push({ liga: j.liga, pais: j.pais, jogos: [j] });
+                  }
+                  return (
+                    <div style={{display:'flex',flexDirection:'column',gap:'18px'}}>
+                      {grupos.map((g, gi) => (
+                        <div key={gi}>
+                          <div style={{display:'flex',alignItems:'center',gap:'8px',marginBottom:'8px',paddingLeft:'2px'}}>
+                            <div style={{fontSize:'12px',fontWeight:700,color:C.text}}>{g.liga}</div>
+                            {g.pais && <div style={{fontSize:'10px',color:C.muted2}}>{g.pais}</div>}
+                          </div>
+                          <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'12px',overflow:'hidden'}}>
+                            {g.jogos.map((j, ji) => {
+                              const aoVivo = ['1H','2H','HT','ET','P','LIVE'].includes(j.status);
+                              const finalizado = ['FT','AET','PEN'].includes(j.status);
+                              const horaFormatada = j.hora
+                                ? new Date(j.hora).toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' })
+                                : '--:--';
+                              return (
+                                <button key={j.id || ji} onClick={() => analisarJogoDaGrade(j.timeA, j.timeB)} style={{
+                                  width:'100%',display:'flex',alignItems:'center',gap:'12px',
+                                  padding:'12px 14px',background:'none',border:'none',
+                                  borderBottom: ji < g.jogos.length - 1 ? `1px solid ${C.border}` : 'none',
+                                  cursor:'pointer',fontFamily:'inherit',textAlign:'left',transition:'background .15s',
+                                }}>
+                                  <div style={{width:'52px',flexShrink:0,fontSize:'12px',fontFamily:FONT_MONO,color: aoVivo ? C.green : C.muted2,fontWeight: aoVivo ? 700 : 500}}>
+                                    {aoVivo ? `${j.minuto ?? ''}'` : finalizado ? 'FIM' : horaFormatada}
+                                  </div>
+                                  <div style={{flex:1,minWidth:0,display:'flex',alignItems:'center',justifyContent:'space-between',gap:'8px'}}>
+                                    <span style={{fontSize:'13px',color:C.text,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                                      {j.timeA} <span style={{color:C.muted2}}>x</span> {j.timeB}
+                                    </span>
+                                    {(aoVivo || finalizado) && (
+                                      <span style={{fontSize:'13px',fontFamily:FONT_MONO,fontWeight:700,color: aoVivo ? C.green : C.muted,flexShrink:0}}>
+                                        {j.golsA ?? 0}-{j.golsB ?? 0}
+                                      </span>
+                                    )}
+                                  </div>
+                                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.muted2} strokeWidth="2" style={{flexShrink:0}}><polyline points="9 18 15 12 9 6"/></svg>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  );
+                })()
+              )}
             </div>
           )}
 
