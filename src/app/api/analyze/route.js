@@ -92,6 +92,13 @@ const CRITERIOS_MERCADO = {
 - Exija que pelo menos um dos dois times tenha taxa de "jogos sem sofrer gol" (clean sheets / jogos disputados) >= 25%. Isso indica capacidade defensiva real, não só sorte pontual.
 - Nos confrontos diretos disponíveis (até 10), a média de gols totais por jogo deve ser <= 3.0. Histórico de jogos com 4+ gols entre esses times específicos é motivo forte para reprovar, mesmo com médias de temporada baixas.
 - Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times.`,
+
+  '-2.5 Gols 1T': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Under 2.5 Gols no PRIMEIRO TEMPO (total de gols dos dois times até o intervalo <= 2):
+- Esse mercado é especificamente sobre o 1º TEMPO, não o jogo todo. Use o subcampo "primeiro_tempo" dentro de "forma_recente_time_a/b" — ele já vem calculado a partir do placar real do intervalo de cada jogo, NÃO é estimado a partir da média do jogo inteiro. Se "primeiro_tempo" for null, a API não trouxe placar de intervalo pra esses jogos (raro) — nesse caso reduza bastante a confiança e diga isso no insight, mas isso é diferente de "o dado não existe": tente de qualquer forma usar "pct_jogos_1t_total_baixo" quando disponível.
+- "primeiro_tempo.pct_jogos_1t_total_baixo" de cada time é a métrica mais direta pra esse mercado: é o % dos jogos recentes desse time em que o total de gols no 1T (somando os dois lados) foi <= 2. Só aprove se os dois times tiverem esse percentual >= 60%.
+- Em "confrontos_diretos", use o campo "placar_1t" quando presente — H2H com 1T historicamente movimentado (2+ gols no intervalo) entre esses dois times específicos é motivo forte pra reprovar, mesmo com boas médias gerais.
+- Times que costumam "começar devagar" (média de gols marcados no 1T bem menor que a média do jogo completo) favorecem esse mercado — compare "media_gols_marcados_1t" com "media_gols_marcados" geral pra notar esse padrão.
+- Exija amostra mínima de 8 jogos com dado de 1º tempo disponível pra AMBOS os times.`,
 };
 
 function demoResult(jogo, mercado, motivo) {
@@ -307,6 +314,10 @@ function agregarJogos(jogos, teamId) {
   let vitorias = 0, empates = 0, derrotas = 0;
   let golsMarcados = 0, golsSofridos = 0;
   let semSofrer = 0, semMarcar = 0, validos = 0;
+  // 1º tempo: a API já manda o placar do intervalo em "score.halftime" de
+  // cada jogo — só nunca tínhamos extraído. Sem isso, mercados como "-2.5
+  // Gols 1T" não tinham nenhum dado real de 1º tempo pra se basear.
+  let golsMarcados1T = 0, golsSofridos1T = 0, validos1T = 0, jogos1TBaixo = 0;
 
   for (const f of jogos) {
     const ehCasa = f.teams?.home?.id === teamId;
@@ -321,6 +332,16 @@ function agregarJogos(jogos, teamId) {
     if (golsPro > golsContra) vitorias++;
     else if (golsPro === golsContra) empates++;
     else derrotas++;
+
+    const ht = f.score?.halftime;
+    const golsPro1T = ehCasa ? ht?.home : ht?.away;
+    const golsContra1T = ehCasa ? ht?.away : ht?.home;
+    if (golsPro1T != null && golsContra1T != null) {
+      validos1T++;
+      golsMarcados1T += golsPro1T;
+      golsSofridos1T += golsContra1T;
+      if (golsPro1T + golsContra1T <= 2) jogos1TBaixo++;
+    }
   }
   if (validos === 0) return null;
 
@@ -331,6 +352,17 @@ function agregarJogos(jogos, teamId) {
     media_gols_sofridos: +(golsSofridos / validos).toFixed(2),
     jogos_sem_sofrer_gol: semSofrer,
     jogos_sem_marcar_gol: semMarcar,
+    // Específico pro mercado de gols no 1º tempo — null se a API não trouxe
+    // o placar do intervalo pra nenhum desses jogos (raro, mas acontece em
+    // ligas menores).
+    primeiro_tempo: validos1T === 0 ? null : {
+      jogos_considerados: validos1T,
+      media_gols_marcados_1t: +(golsMarcados1T / validos1T).toFixed(2),
+      media_gols_sofridos_1t: +(golsSofridos1T / validos1T).toFixed(2),
+      // % dos jogos desse time em que o total de gols no 1T (dos dois lados)
+      // foi <= 2 — é literalmente a pergunta que o mercado "-2.5 Gols 1T" faz.
+      pct_jogos_1t_total_baixo: +((jogos1TBaixo / validos1T) * 100).toFixed(0),
+    },
   };
 }
 
@@ -471,6 +503,9 @@ async function getFootballData(jogo, mercado) {
       casa: f.teams?.home?.name,
       fora: f.teams?.away?.name,
       placar: `${f.goals?.home ?? '?'}-${f.goals?.away ?? '?'}`,
+      placar_1t: f.score?.halftime?.home != null
+        ? `${f.score.halftime.home}-${f.score.halftime.away}`
+        : null,
       // Indica se nesse confronto passado o mando de campo foi o mesmo do
       // jogo analisado agora (time A em casa) — confronto direto com o mesmo
       // mando vale mais como sinal do que um com os lados invertidos.
