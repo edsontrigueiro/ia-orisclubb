@@ -44,6 +44,8 @@ export async function PATCH(request) {
     const { id, resultado } = await request.json();
     if (!id || !resultado)
       return NextResponse.json({ error: 'id e resultado obrigatórios.' }, { status: 400 });
+    if (resultado !== 'green' && resultado !== 'red')
+      return NextResponse.json({ error: 'resultado deve ser "green" ou "red".' }, { status: 400 });
     const db = getSupabaseAdmin();
     const { data: sig } = await db.from('signals').select('stake,odd')
       .eq('id', id).eq('user_id', session.userId).single();
