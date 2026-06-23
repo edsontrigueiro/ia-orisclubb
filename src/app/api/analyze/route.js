@@ -1,6 +1,77 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
+import { getSupabaseAdmin } from '@/lib/supabase';
+
+// Log estruturado: facilita achar no Vercel exatamente em qual etapa e
+// confronto algo falhou, em vez de só um texto solto sem contexto.
+function logErro(etapa, contexto, erro) {
+  console.error(JSON.stringify({
+    ts: new Date().toISOString(),
+    etapa,
+    ...contexto,
+    erro: erro?.message || String(erro),
+  }));
+}
+
+// Retentativa simples para erros transitórios (rate limit / instabilidade
+// momentânea da API). Não tenta de novo em erros definitivos (404, 401 etc).
+async function fetchComRetry(url, opts, tentativas = 2) {
+  let ultimoErro;
+  for (let i = 0; i < tentativas; i++) {
+    try {
+      const res = await fetch(url, opts);
+      if (res.ok || ![429, 502, 503, 504].includes(res.status) || i === tentativas - 1) {
+        return res;
+      }
+    } catch (e) {
+      ultimoErro = e;
+      if (i === tentativas - 1) throw ultimoErro;
+    }
+    await new Promise(r => setTimeout(r, 400 * (i + 1)));
+  }
+}
+
+// Cache de análises já feitas (Supabase), TTL de 2h, pra não gastar chamada
+// de API-Football/Anthropic repetindo o mesmo confronto+mercado em sequência.
+// Falha "em silêncio" se a tabela ainda não existir — cache é otimização,
+// nunca deve impedir a análise normal de funcionar.
+const CACHE_TTL_MS = 2 * 60 * 60 * 1000;
+
+function chaveCache(jogo, mercado) {
+  return `${jogo.trim().toLowerCase()}::${mercado}`;
+}
+
+async function lerCache(jogo, mercado) {
+  try {
+    const db = getSupabaseAdmin();
+    const { data, error } = await db
+      .from('analise_cache')
+      .select('payload, created_at')
+      .eq('chave', chaveCache(jogo, mercado))
+      .maybeSingle();
+    if (error || !data) return null;
+    const idade = Date.now() - new Date(data.created_at).getTime();
+    if (idade > CACHE_TTL_MS) return null;
+    return data.payload;
+  } catch (e) {
+    logErro('lerCache', { jogo, mercado }, e);
+    return null;
+  }
+}
+
+async function salvarCache(jogo, mercado, payload) {
+  try {
+    const db = getSupabaseAdmin();
+    await db.from('analise_cache').upsert({
+      chave: chaveCache(jogo, mercado),
+      payload,
+      created_at: new Date().toISOString(),
+    });
+  } catch (e) {
+    logErro('salvarCache', { jogo, mercado }, e);
+  }
+}
 
 const MERCADOS = {
   'Lay 2x2':        { min: 82 },
@@ -70,45 +141,66 @@ function parseTimes(jogo) {
 
 async function buscarIdTime(nome, headers) {
   try {
-    const res = await fetch(
+    const res = await fetchComRetry(
       `https://v3.football.api-sports.io/teams?search=${encodeURIComponent(nome)}`,
-      { headers }
+      { headers, signal: AbortSignal.timeout(8000) }
     );
     if (!res.ok) return null;
     const data = await res.json();
-    return data?.response?.[0]?.team?.id || null;
+    const candidatos = data?.response || [];
+    if (candidatos.length === 0) return null;
+
+    // A API retorna por ordem de relevância interna, que nem sempre é a
+    // seleção/clube certo (ex: pode vir um clube com nome parecido antes da
+    // seleção nacional). Prioriza nome exatamente igual (case-insensitive);
+    // se não houver, cai pro primeiro resultado como antes.
+    const alvo = nome.trim().toLowerCase();
+    const exato = candidatos.find(c => c.team?.name?.trim().toLowerCase() === alvo);
+    return (exato || candidatos[0])?.team?.id || null;
   } catch (e) {
-    console.error('buscarIdTime exception:', e.message);
+    logErro('buscarIdTime', { nome }, e);
     return null;
   }
 }
 
 async function buscarProximoJogo(teamId, headers) {
   try {
-    const res = await fetch(
+    const res = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures?team=${teamId}&next=1`,
-      { headers }
+      { headers, signal: AbortSignal.timeout(8000) }
     );
-    if (!res.ok) return null;
-    const data = await res.json();
-    return data?.response?.[0] || null;
+    if (res.ok) {
+      const data = await res.json();
+      const proximo = data?.response?.[0];
+      if (proximo) return proximo;
+    }
+    // Sem próximo jogo agendado (time fora de temporada, eliminado, etc.) —
+    // usa o último jogo já disputado pra ainda ter liga/temporada válidas
+    // pra puxar estatísticas, em vez de desistir e deixar tudo nulo.
+    const resUltimo = await fetchComRetry(
+      `https://v3.football.api-sports.io/fixtures?team=${teamId}&last=1`,
+      { headers, signal: AbortSignal.timeout(8000) }
+    );
+    if (!resUltimo.ok) return null;
+    const dataUltimo = await resUltimo.json();
+    return dataUltimo?.response?.[0] || null;
   } catch (e) {
-    console.error('buscarProximoJogo exception:', e.message);
+    logErro('buscarProximoJogo', { teamId }, e);
     return null;
   }
 }
 
 async function buscarHeadToHead(idA, idB, headers) {
   try {
-    const res = await fetch(
+    const res = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures/headtohead?h2h=${idA}-${idB}&last=10`,
-      { headers }
+      { headers, signal: AbortSignal.timeout(8000) }
     );
     if (!res.ok) return null;
     const data = await res.json();
     return data?.response || null;
   } catch (e) {
-    console.error('buscarHeadToHead exception:', e.message);
+    logErro('buscarHeadToHead', { idA, idB }, e);
     return null;
   }
 }
@@ -121,9 +213,9 @@ async function buscarHeadToHead(idA, idB, headers) {
 // robusta quando a amostra "presa" à competição atual for pequena.
 async function buscarFormaRecente(teamId, headers, qtd = 10) {
   try {
-    const res = await fetch(
+    const res = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures?team=${teamId}&last=${qtd}`,
-      { headers }
+      { headers, signal: AbortSignal.timeout(8000) }
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -158,7 +250,7 @@ async function buscarFormaRecente(teamId, headers, qtd = 10) {
       jogos_sem_marcar_gol: semMarcar,
     };
   } catch (e) {
-    console.error('buscarFormaRecente exception:', e.message);
+    logErro('buscarFormaRecente', { teamId }, e);
     return null;
   }
 }
@@ -166,9 +258,9 @@ async function buscarFormaRecente(teamId, headers, qtd = 10) {
 async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
   if (!leagueId || !season) return null;
   try {
-    const res = await fetch(
+    const res = await fetchComRetry(
       `https://v3.football.api-sports.io/teams/statistics?team=${teamId}&league=${leagueId}&season=${season}`,
-      { headers }
+      { headers, signal: AbortSignal.timeout(8000) }
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -185,7 +277,7 @@ async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
       jogos_sem_marcar_gol: s.failed_to_score?.total ?? null,
     };
   } catch (e) {
-    console.error('buscarEstatisticasTime exception:', e.message);
+    logErro('buscarEstatisticasTime', { teamId, leagueId, season }, e);
     return null;
   }
 }
@@ -286,12 +378,22 @@ export async function POST(request) {
   const session = await getSession(request);
   if (!session) return NextResponse.json({ error: 'Não autenticado.' }, { status: 401 });
 
+  // Capturados aqui fora, antes do try, porque request.clone() falha com
+  // "unusable" se chamado depois que o body já foi lido — então o fallback
+  // de erro não pode depender de reconstruir a request lá no catch.
+  let jogo, mercado;
+
   try {
-    const { jogo, mercado } = await request.json();
+    ({ jogo, mercado } = await request.json());
     if (!jogo || !mercado)
       return NextResponse.json({ error: 'Jogo e mercado obrigatórios.' }, { status: 400 });
     if (!MERCADOS[mercado])
       return NextResponse.json({ error: 'Mercado inválido.' }, { status: 400 });
+
+    // Cache: mesmo jogo+mercado analisado há menos de 2h devolve na hora,
+    // sem gastar chamada de API-Football nem de IA de novo.
+    const cacheado = await lerCache(jogo, mercado);
+    if (cacheado) return NextResponse.json({ ...cacheado, _cache: true });
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
     if (!apiKey) return NextResponse.json(demoResult(jogo, mercado));
@@ -307,8 +409,9 @@ export async function POST(request) {
       ? `\n\n${CRITERIOS_MERCADO[mercado]}`
       : '';
 
-    const res = await fetch('https://api.anthropic.com/v1/messages', {
+    const res = await fetchComRetry('https://api.anthropic.com/v1/messages', {
       method: 'POST',
+      signal: AbortSignal.timeout(25000),
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
@@ -316,7 +419,7 @@ export async function POST(request) {
       },
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
-        max_tokens: 1500,
+        max_tokens: 2000,
         system: montarSystemPrompt(),
         messages: [{
           role: 'user',
@@ -332,7 +435,7 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
     });
 
     if (!res.ok) {
-      console.error('Anthropic error:', res.status, await res.text().catch(() => ''));
+      logErro('anthropic_call', { jogo, mercado, status: res.status }, await res.text().catch(() => 'sem corpo'));
       return NextResponse.json(demoResult(jogo, mercado));
     }
 
@@ -343,11 +446,14 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
     const result = JSON.parse(text);
     result._minScore = min;
     result._dadosReaisUsados = dadosReais.disponivel;
+
+    // Só cacheia análise real (nunca modo demo, nunca erro).
+    await salvarCache(jogo, mercado, result);
+
     return NextResponse.json(result);
 
   } catch (e) {
-    console.error('analyze error:', e.message);
-    const body = await request.clone().json().catch(() => ({}));
-    return NextResponse.json(demoResult(body.jogo || 'Jogo', body.mercado || 'Lay 2x2'));
+    logErro('analyze', { jogo, mercado }, e);
+    return NextResponse.json(demoResult(jogo || 'Jogo', mercado || 'Lay 2x2'));
   }
 }
