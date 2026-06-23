@@ -6,6 +6,7 @@ export const maxDuration = 60;
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { getCached, setCached } from '@/lib/cache';
+import { fetchComRetry } from '@/lib/fetchUtil';
 
 // Log estruturado: facilita achar no Vercel exatamente em qual etapa e
 // confronto algo falhou, em vez de só um texto solto sem contexto.
@@ -24,22 +25,6 @@ function logErro(etapa, contexto, erro) {
 // opts faria o cronômetro do timeout começar a contar ANTES da 1ª tentativa
 // e continuar contando durante o retry, fazendo a 2ª tentativa abortar
 // quase instantaneamente se a 1ª já tiver demorado perto do limite.
-async function fetchComRetry(url, opts = {}, { tentativas = 2, timeoutMs = 8000 } = {}) {
-  let ultimoErro;
-  for (let i = 0; i < tentativas; i++) {
-    try {
-      const res = await fetch(url, { ...opts, signal: AbortSignal.timeout(timeoutMs) });
-      if (res.ok || ![429, 502, 503, 504].includes(res.status) || i === tentativas - 1) {
-        return res;
-      }
-    } catch (e) {
-      ultimoErro = e;
-      if (i === tentativas - 1) throw ultimoErro;
-    }
-    await new Promise(r => setTimeout(r, 400 * (i + 1)));
-  }
-}
-
 // Cache de análises já feitas, TTL de 2h, pra não gastar chamada de
 // API-Football/Anthropic repetindo o mesmo confronto+mercado em sequência.
 // Prefixo "analise::" evita colidir com outras chaves de cache (ex: a grade
