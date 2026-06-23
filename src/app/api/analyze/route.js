@@ -1,4 +1,8 @@
 export const dynamic = 'force-dynamic';
+// Sem isso, a Vercel mata a função no limite padrão (10s no plano Hobby)
+// antes mesmo do nosso próprio timeout da chamada à Anthropic ter chance
+// de terminar. 60s é o máximo permitido no plano Hobby.
+export const maxDuration = 60;
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
 import { getCached, setCached } from '@/lib/cache';
@@ -16,11 +20,15 @@ function logErro(etapa, contexto, erro) {
 
 // Retentativa simples para erros transitórios (rate limit / instabilidade
 // momentânea da API). Não tenta de novo em erros definitivos (404, 401 etc).
-async function fetchComRetry(url, opts, tentativas = 2) {
+// timeoutMs é recriado a cada tentativa — passar um "signal" já pronto no
+// opts faria o cronômetro do timeout começar a contar ANTES da 1ª tentativa
+// e continuar contando durante o retry, fazendo a 2ª tentativa abortar
+// quase instantaneamente se a 1ª já tiver demorado perto do limite.
+async function fetchComRetry(url, opts = {}, { tentativas = 2, timeoutMs = 8000 } = {}) {
   let ultimoErro;
   for (let i = 0; i < tentativas; i++) {
     try {
-      const res = await fetch(url, opts);
+      const res = await fetch(url, { ...opts, signal: AbortSignal.timeout(timeoutMs) });
       if (res.ok || ![429, 502, 503, 504].includes(res.status) || i === tentativas - 1) {
         return res;
       }
@@ -86,9 +94,10 @@ const CRITERIOS_MERCADO = {
 - Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times.`,
 };
 
-function demoResult(jogo, mercado) {
+function demoResult(jogo, mercado, motivo) {
   const min = MERCADOS[mercado]?.min || 82;
   const score = min + Math.floor(Math.random() * 15);
+  const motivoFinal = motivo || 'Configure ANTHROPIC_API_KEY para análise real';
   return {
     evento: jogo,
     competicao: 'Modo Demo',
@@ -98,9 +107,9 @@ function demoResult(jogo, mercado) {
     probabilidade_real: 72 + Math.floor(Math.random() * 18),
     criterios_atendidos: ['H2H favorável', 'Forma recente positiva'],
     criterios_nao_atendidos: [],
-    alertas: ['Configure ANTHROPIC_API_KEY para análise real'],
-    insight: 'Análise em modo demonstração. Configure as variáveis de ambiente.',
-    resumo: 'Configure ANTHROPIC_API_KEY e FOOTBALL_API_KEY para análise real com IA e dados ao vivo.',
+    alertas: [motivoFinal],
+    insight: `Análise em modo demonstração. ${motivoFinal}.`,
+    resumo: `Resultado simulado, não use pra decisão real. Motivo: ${motivoFinal}.`,
     _minScore: min,
     _demo: true,
   };
@@ -121,7 +130,7 @@ async function buscarIdTime(nome, headers) {
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/teams?search=${encodeURIComponent(nome)}`,
-      { headers, signal: AbortSignal.timeout(8000) }
+      { headers }
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -145,7 +154,7 @@ async function buscarProximoJogo(teamId, headers) {
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures?team=${teamId}&next=1`,
-      { headers, signal: AbortSignal.timeout(8000) }
+      { headers }
     );
     if (res.ok) {
       const data = await res.json();
@@ -157,7 +166,7 @@ async function buscarProximoJogo(teamId, headers) {
     // pra puxar estatísticas, em vez de desistir e deixar tudo nulo.
     const resUltimo = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures?team=${teamId}&last=1`,
-      { headers, signal: AbortSignal.timeout(8000) }
+      { headers }
     );
     if (!resUltimo.ok) return null;
     const dataUltimo = await resUltimo.json();
@@ -172,7 +181,7 @@ async function buscarHeadToHead(idA, idB, headers) {
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures/headtohead?h2h=${idA}-${idB}&last=10`,
-      { headers, signal: AbortSignal.timeout(8000) }
+      { headers }
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -192,7 +201,7 @@ async function buscarFixtureFuturo(idA, idB, headers) {
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures/headtohead?h2h=${idA}-${idB}&next=1`,
-      { headers, signal: AbortSignal.timeout(8000) }
+      { headers }
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -246,7 +255,7 @@ async function buscarOddsReais(fixtureId, mercado, headers) {
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/odds?fixture=${fixtureId}`,
-      { headers, signal: AbortSignal.timeout(8000) }
+      { headers }
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -335,7 +344,7 @@ async function buscarFormaRecente(teamId, headers, qtd = 10) {
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures?team=${teamId}&last=${qtd}`,
-      { headers, signal: AbortSignal.timeout(8000) }
+      { headers }
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -370,7 +379,7 @@ async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/teams/statistics?team=${teamId}&league=${leagueId}&season=${season}`,
-      { headers, signal: AbortSignal.timeout(8000) }
+      { headers }
     );
     if (!res.ok) return null;
     const data = await res.json();
@@ -561,7 +570,6 @@ export async function POST(request) {
 
     const res = await fetchComRetry('https://api.anthropic.com/v1/messages', {
       method: 'POST',
-      signal: AbortSignal.timeout(25000),
       headers: {
         'Content-Type': 'application/json',
         'x-api-key': apiKey,
@@ -582,16 +590,16 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
 {"evento":"nome formatado","competicao":"liga ou null","score":0-100,"aprovado":bool,"odds_estimada":"1.XX","probabilidade_real":0-100,"criterios_atendidos":["..."],"criterios_nao_atendidos":["..."],"alertas":[],"insight":"frase curta explicando o score, citando dado real se houver","resumo":"2-3 frases operacionais para o trader"}`
         }]
       }),
-    });
+    }, { tentativas: 1, timeoutMs: 50000 });
 
     if (!res.ok) {
       logErro('anthropic_call', { jogo, mercado, status: res.status }, await res.text().catch(() => 'sem corpo'));
-      return NextResponse.json(demoResult(jogo, mercado));
+      return NextResponse.json(demoResult(jogo, mercado, `A IA não respondeu corretamente (status ${res.status}). Tente novamente em alguns minutos.`));
     }
 
     const data = await res.json();
     const text = data.content?.[0]?.text?.replace(/```json|```/g, '').trim();
-    if (!text) return NextResponse.json(demoResult(jogo, mercado));
+    if (!text) return NextResponse.json(demoResult(jogo, mercado, 'A IA não retornou conteúdo válido. Tente novamente.'));
 
     const result = JSON.parse(text);
     result._minScore = min;
@@ -605,6 +613,9 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
 
   } catch (e) {
     logErro('analyze', { jogo, mercado }, e);
-    return NextResponse.json(demoResult(jogo || 'Jogo', mercado || 'Lay 2x2'));
+    const motivo = e?.name === 'TimeoutError' || /abort/i.test(e?.message || '')
+      ? 'A análise demorou demais e foi interrompida (timeout). A IA pode estar sobrecarregada — tente novamente.'
+      : 'Erro inesperado ao processar a análise. Tente novamente.';
+    return NextResponse.json(demoResult(jogo || 'Jogo', mercado || 'Lay 2x2', motivo));
   }
 }
