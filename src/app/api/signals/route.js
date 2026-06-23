@@ -3,22 +3,29 @@ import { NextResponse } from 'next/server';
 import { getSupabaseAdmin } from '@/lib/supabase';
 import { getSession } from '@/lib/auth';
 
+function logErro(etapa, contexto, erro) {
+  console.error(JSON.stringify({ ts: new Date().toISOString(), etapa, ...contexto, erro: erro?.message || String(erro) }));
+}
+
 export async function GET(request) {
   const session = await getSession(request);
   if (!session) return NextResponse.json({ error: 'Não autenticado.' }, { status: 401 });
   const db = getSupabaseAdmin();
   const { data, error } = await db.from('signals').select('*')
     .eq('user_id', session.userId).order('analisado_em', { ascending: false });
-  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+  if (error) { logErro('signals_get', {}, error); return NextResponse.json({ error: error.message }, { status: 500 }); }
   return NextResponse.json({ signals: data });
 }
 
 export async function POST(request) {
   const session = await getSession(request);
   if (!session) return NextResponse.json({ error: 'Não autenticado.' }, { status: 401 });
+  let mercado;
   try {
-    const { evento, competicao, mercado, score, criterios_ok, criterios_no,
-            insight, resumo, decisao, odd, stake } = await request.json();
+    const body = await request.json();
+    ({ mercado } = body);
+    const { evento, competicao, score, criterios_ok, criterios_no,
+            insight, resumo, decisao, odd, stake } = body;
     if (!evento || !mercado || !decisao)
       return NextResponse.json({ error: 'Campos obrigatórios ausentes.' }, { status: 400 });
     const lucro_potencial = decisao === 'pegar' && odd && stake
@@ -32,9 +39,18 @@ export async function POST(request) {
       stake: stake ? parseFloat(stake) : null,
       lucro_potencial
     }).select().single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) {
+      // Log com o mercado explícito — se for restrição de schema (CHECK/enum)
+      // rejeitando um mercado novo que ainda não foi cadastrado no banco,
+      // isso aparece aqui claramente em vez de sumir em silêncio.
+      logErro('signals_insert', { mercado }, error);
+      return NextResponse.json({ error: error.message }, { status: 500 });
+    }
     return NextResponse.json({ signal: data });
-  } catch { return NextResponse.json({ error: 'Erro interno.' }, { status: 500 }); }
+  } catch (e) {
+    logErro('signals_post', { mercado }, e);
+    return NextResponse.json({ error: 'Erro interno.' }, { status: 500 });
+  }
 }
 
 export async function PATCH(request) {
@@ -58,7 +74,10 @@ export async function PATCH(request) {
     const { data, error } = await db.from('signals')
       .update({ resultado, lucro_real, atualizado_em: new Date().toISOString() })
       .eq('id', id).eq('user_id', session.userId).select().single();
-    if (error) return NextResponse.json({ error: error.message }, { status: 500 });
+    if (error) { logErro('signals_patch', { id, resultado }, error); return NextResponse.json({ error: error.message }, { status: 500 }); }
     return NextResponse.json({ signal: data });
-  } catch { return NextResponse.json({ error: 'Erro interno.' }, { status: 500 }); }
+  } catch (e) {
+    logErro('signals_patch_exception', {}, e);
+    return NextResponse.json({ error: 'Erro interno.' }, { status: 500 });
+  }
 }
