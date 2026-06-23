@@ -68,7 +68,8 @@ const MERCADOS = {
 const CRITERIOS_MERCADO = {
   'Dupla Chance': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Dupla Chance (1X ou X2) no favorito:
 - Só aprove se houver diferença CLARA de qualidade entre os times nos dados: favorito com média de gols marcados >= 1.8 e média de gols sofridos <= 1.2; adversário com média de gols sofridos >= 1.5. Se as médias forem parecidas entre os dois times, isso é um jogo equilibrado — REPROVE, mesmo que um dos nomes "pareça" favorito.
-- Nos confrontos diretos disponíveis (até 10), o favorito não deve ter mais de 1 derrota. 2+ derrotas no H2H é sinal de zebra recorrente — reduza o score fortemente.
+- Priorize "como_mandante" do Time A e "como_visitante" do Time B (não a média geral) — um time pode ser ótimo em casa e mediano fora, e é justamente o mando de campo que decide esse mercado.
+- Nos confrontos diretos disponíveis (até 10), o favorito não deve ter mais de 1 derrota — dê peso extra aos confrontos com "mesmo_mando_atual": true. 2+ derrotas no H2H é sinal de zebra recorrente — reduza o score fortemente.
 - Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times. Menos que isso, reduza o score e diga isso explicitamente em "alertas".
 - Competições eliminatórias / mata-mata (decisão, copa, playoff) têm motivação anormal e mais risco de zebra — se a "liga" indicada nos dados for desse tipo, reduza o score mesmo com favoritismo claro nas médias.`,
 
@@ -188,6 +189,39 @@ async function buscarHeadToHead(idA, idB, headers) {
 // partidas recentes em eliminatórias/amistosos. Esta função busca os últimos
 // jogos do time SEM esse travamento de competição, pra servir de base mais
 // robusta quando a amostra "presa" à competição atual for pequena.
+// Agrega uma lista de jogos (já filtrada) na perspectiva de um time
+// específico — usado pra forma geral, só em casa, só fora, e últimos 5.
+function agregarJogos(jogos, teamId) {
+  let vitorias = 0, empates = 0, derrotas = 0;
+  let golsMarcados = 0, golsSofridos = 0;
+  let semSofrer = 0, semMarcar = 0, validos = 0;
+
+  for (const f of jogos) {
+    const ehCasa = f.teams?.home?.id === teamId;
+    const golsPro = ehCasa ? f.goals?.home : f.goals?.away;
+    const golsContra = ehCasa ? f.goals?.away : f.goals?.home;
+    if (golsPro == null || golsContra == null) continue;
+    validos++;
+    golsMarcados += golsPro;
+    golsSofridos += golsContra;
+    if (golsContra === 0) semSofrer++;
+    if (golsPro === 0) semMarcar++;
+    if (golsPro > golsContra) vitorias++;
+    else if (golsPro === golsContra) empates++;
+    else derrotas++;
+  }
+  if (validos === 0) return null;
+
+  return {
+    jogos_considerados: validos,
+    vitorias, empates, derrotas,
+    media_gols_marcados: +(golsMarcados / validos).toFixed(2),
+    media_gols_sofridos: +(golsSofridos / validos).toFixed(2),
+    jogos_sem_sofrer_gol: semSofrer,
+    jogos_sem_marcar_gol: semMarcar,
+  };
+}
+
 async function buscarFormaRecente(teamId, headers, qtd = 10) {
   try {
     const res = await fetchComRetry(
@@ -196,35 +230,25 @@ async function buscarFormaRecente(teamId, headers, qtd = 10) {
     );
     if (!res.ok) return null;
     const data = await res.json();
-    const jogos = (data?.response || []).filter(f => f.fixture?.status?.short === 'FT');
+    const jogos = (data?.response || [])
+      .filter(f => f.fixture?.status?.short === 'FT')
+      // Mais recente primeiro — garante que "últimos 5" sejam de fato os 5
+      // mais recentes, independente da ordem que a API devolveu.
+      .sort((a, b) => new Date(b.fixture?.date) - new Date(a.fixture?.date));
     if (jogos.length === 0) return null;
 
-    let vitorias = 0, empates = 0, derrotas = 0;
-    let golsMarcados = 0, golsSofridos = 0;
-    let semSofrer = 0, semMarcar = 0;
+    const mandante = jogos.filter(f => f.teams?.home?.id === teamId);
+    const visitante = jogos.filter(f => f.teams?.away?.id === teamId);
 
-    for (const f of jogos) {
-      const ehCasa = f.teams?.home?.id === teamId;
-      const golsPro = ehCasa ? f.goals?.home : f.goals?.away;
-      const golsContra = ehCasa ? f.goals?.away : f.goals?.home;
-      if (golsPro == null || golsContra == null) continue;
-      golsMarcados += golsPro;
-      golsSofridos += golsContra;
-      if (golsContra === 0) semSofrer++;
-      if (golsPro === 0) semMarcar++;
-      if (golsPro > golsContra) vitorias++;
-      else if (golsPro === golsContra) empates++;
-      else derrotas++;
-    }
-
-    const n = jogos.length;
     return {
-      jogos_considerados: n,
-      vitorias, empates, derrotas,
-      media_gols_marcados: +(golsMarcados / n).toFixed(2),
-      media_gols_sofridos: +(golsSofridos / n).toFixed(2),
-      jogos_sem_sofrer_gol: semSofrer,
-      jogos_sem_marcar_gol: semMarcar,
+      // Geral: todos os jogos buscados, casa+fora misturados.
+      ...agregarJogos(jogos, teamId),
+      // Só em casa / só fora — efeito de mando de campo é real e relevante.
+      como_mandante: agregarJogos(mandante, teamId),
+      como_visitante: agregarJogos(visitante, teamId),
+      // Últimos 5 (subconjunto dos mesmos jogos, já ordenados do mais
+      // recente) — serve pra detectar mudança de momento vs. os últimos 10.
+      ultimos_5: agregarJogos(jogos.slice(0, 5), teamId),
     };
   } catch (e) {
     logErro('buscarFormaRecente', { teamId }, e);
@@ -310,6 +334,10 @@ async function getFootballData(jogo) {
     casa: f.teams?.home?.name,
     fora: f.teams?.away?.name,
     placar: `${f.goals?.home ?? '?'}-${f.goals?.away ?? '?'}`,
+    // Indica se nesse confronto passado o mando de campo foi o mesmo do
+    // jogo analisado agora (time A em casa) — confronto direto com o mesmo
+    // mando vale mais como sinal do que um com os lados invertidos.
+    mesmo_mando_atual: f.teams?.home?.id === idA,
   }));
 
   return {
@@ -347,6 +375,7 @@ function montarSystemPrompt() {
 5. Se os dados estiverem totalmente indisponíveis, diga isso claramente no "insight" e no "resumo", e ainda assim responda apenas com o JSON pedido.
 6. Se a mensagem do usuário incluir um bloco "CRITÉRIOS ESPECÍFICOS DESTE MERCADO", esses critérios têm prioridade sobre seu julgamento genérico. Eles definem exatamente o que torna esse mercado estatisticamente confiável — verifique cada condição explicitamente contra os dados e cite no "criterios_atendidos"/"criterios_nao_atendidos" quais delas foram ou não satisfeitas, com o número real que comprova. Se uma condição obrigatória desses critérios não for satisfeita, o score deve cair abaixo do mínimo, independentemente de outros sinais favoráveis.
 7. Os dados trazem duas fontes de estatística por time: "estatisticas_time_a/b" (presa à competição/temporada do próximo jogo do time) e "forma_recente_time_a/b" (últimos jogos do time em qualquer competição). Se "estatisticas_time_a/b" tiver amostra pequena (jogos_disputados <= 2) ou estiver nula, use "forma_recente_time_a/b" como base principal da análise — ela tem mais jogos de apoio e reflete melhor o nível atual do time. Cite explicitamente qual das duas fontes você usou e por quê.
+8. Convenção do confronto: no formato "Time A vs Time B", Time A é o mandante (joga em casa) e Time B é o visitante nesse jogo específico. "forma_recente_time_a/b" traz subcampos "como_mandante" e "como_visitante" — priorize "como_mandante" do Time A e "como_visitante" do Time B sobre a média geral misturada, pois mando de campo é um efeito real no futebol. Em "confrontos_diretos", dê mais peso aos jogos com "mesmo_mando_atual": true (mesmo mando de campo do confronto atual) do que aos com mando invertido. Se "ultimos_5" divergir muito de "ultimos_10"/geral (ex: time que vinha bem mas piorou nos últimos 5, ou vice-versa), trate isso como mudança de momento e mencione explicitamente no "insight" — não ignore a tendência recente em favor só da média.
 
 Responda SOMENTE com JSON válido, sem markdown, sem texto fora do JSON.`;
 }
