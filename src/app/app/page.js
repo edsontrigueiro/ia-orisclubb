@@ -411,7 +411,7 @@ export default function App() {
 
                 <label style={{display:'block',fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1.5px',textTransform:'uppercase',marginBottom:'8px'}}>Jogo / Evento</label>
                 <textarea value={jogo} onChange={e=>setJogo(e.target.value)}
-                  placeholder={"Ex: Arsenal vs Chelsea\nEx: Alcaraz vs Sinner — Roland Garros"}
+                  placeholder={"Ex: Arsenal vs Chelsea\nEx: River Plate (Uruguai) vs Nacional"}
                   rows={3} style={{width:'100%',background:C.bg4,border:`1px solid ${C.border}`,color:C.text,borderRadius:'8px',padding:'10px 12px',fontSize:'13px',fontFamily:'inherit',resize:'none',outline:'none',boxSizing:'border-box',lineHeight:'1.6'}}/>
                 <div style={{fontSize:'10px',color:C.muted2,marginTop:'8px',marginBottom:'18px',display:'flex',alignItems:'center',gap:'5px'}}>
                   <div style={{width:'5px',height:'5px',borderRadius:'50%',background:C.orange}}/>
