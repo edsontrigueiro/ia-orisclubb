@@ -358,6 +358,11 @@ const ODDS_MAPA = {
   '+0.5 Gols':      { bet: 'Goals Over/Under', value: 'Over 0.5' },
   'Under 3.5 Gols': { bet: 'Goals Over/Under', value: 'Under 3.5' },
   'Dupla Chance':   { bet: 'Double Chance', value: null }, // valor varia conforme quem é o favorito, tratado abaixo
+  // Lay Empate = apostar CONTRA o empate = exatamente o valor "Home/Away"
+  // do mercado Double Chance (casas de aposta já vendem isso pronto).
+  'Lay Empate':      { bet: 'Double Chance', value: 'Home/Away' },
+  'BTTS Não':        { bet: 'Both Teams Score', value: 'No' },
+  '+0.5 Gols 1T':    { bet: 'Goals Over/Under First Half', value: 'Over 0.5' },
 };
 
 // Busca a odd real de mercado pro confronto, se o plano da API-Football
@@ -377,10 +382,12 @@ async function buscarOddsReais(fixtureId, mercado, headers) {
     const bookmakers = data?.response?.[0]?.bookmakers || [];
     if (bookmakers.length === 0) return null;
 
-    // Double Chance: devolve as duas opções relevantes (Home/Draw e
-    // Draw/Away) e deixa a IA decidir qual bate com o favorito que ELA
-    // identificou — o código não sabe ainda quem é favorito nesse ponto.
-    if (mapa.bet === 'Double Chance') {
+    // Double Chance SEM valor fixo = Dupla Chance: devolve as duas opções
+    // relevantes (Home/Draw e Draw/Away) e deixa a IA decidir qual bate com
+    // o favorito que ELA identificou — o código não sabe ainda quem é
+    // favorito nesse ponto. Mercados como Lay Empate JÁ sabem o valor exato
+    // que querem ("Home/Away") e caem no branch genérico abaixo, não aqui.
+    if (mapa.bet === 'Double Chance' && mapa.value === null) {
       const valores = { 'Home/Draw': [], 'Draw/Away': [] };
       for (const bm of bookmakers) {
         const aposta = bm.bets?.find(b => b.name === 'Double Chance');
@@ -395,8 +402,9 @@ async function buscarOddsReais(fixtureId, mercado, headers) {
       return { mercado, odd_1x_time_a: homeDraw, odd_x2_time_b: drawAway, casas_consultadas: bookmakers.length };
     }
 
-    // Goals Over/Under: pega a média da odd pro valor específico (ex:
-    // "Over 1.5") entre todas as casas que oferecem esse mercado.
+    // Genérico: pega a média da odd pro valor específico do mercado (ex:
+    // "Over 1.5" em Goals Over/Under, "No" em Both Teams Score, "Home/Away"
+    // em Double Chance pra Lay Empate) entre todas as casas que oferecem.
     const valores = [];
     for (const bm of bookmakers) {
       const aposta = bm.bets?.find(b => b.name === mapa.bet);
