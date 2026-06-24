@@ -151,18 +151,45 @@ function demoResult(jogo, mercado, motivo) {
 function parseTimes(jogo) {
   // Defesa extra: mesmo que o handler já valide tipo antes de chamar aqui,
   // não custa blindar a função em si contra input não-string.
-  if (typeof jogo !== 'string') return { timeA: null, timeB: null };
+  if (typeof jogo !== 'string') return { timeA: null, timeB: null, paisA: null, paisB: null };
   // Aceita "vs", "vs." (com ponto) e "x" como separador — "vs." sem o ponto
   // opcional no regex fazia o split falhar silenciosamente, tratando o jogo
   // inteiro como um único nome de time e o segundo como ausente.
   const partes = jogo.split(/\s+vs\.?\s+|\s+x\s+/i);
-  return {
-    timeA: partes[0]?.trim().replace(/[.,]+$/, '') || null,
-    timeB: partes[1]?.trim().replace(/[.,]+$/, '') || null,
-  };
+
+  // Times com o mesmo nome existem em países diferentes (River Plate, Nacional,
+  // Independiente, Always Ready, etc. se repetem na América do Sul). Se o
+  // usuário escrever "River Plate (Uruguai) vs Nacional", extrai o país entre
+  // parênteses pra desambiguar a busca, em vez de confiar só no nome.
+  function extrair(parte) {
+    if (!parte) return { nome: null, pais: null };
+    const m = parte.trim().replace(/[.,]+$/, '').match(/^(.*?)\s*\(([^)]+)\)\s*$/);
+    if (m) return { nome: m[1].trim(), pais: m[2].trim() };
+    return { nome: parte.trim().replace(/[.,]+$/, ''), pais: null };
+  }
+
+  const a = extrair(partes[0]);
+  const b = extrair(partes[1]);
+  return { timeA: a.nome || null, timeB: b.nome || null, paisA: a.pais, paisB: b.pais };
 }
 
-async function buscarIdTime(nome, headers) {
+// A API devolve o país em inglês ("Uruguay"), mas o usuário escreve em
+// português ("Uruguai") — sem isso, a dica de país nunca bateria com nada.
+const PAISES_PT_EN = {
+  uruguai: 'uruguay', paraguai: 'paraguay', brasil: 'brazil', equador: 'ecuador',
+  mexico: 'mexico', espanha: 'spain', inglaterra: 'england', italia: 'italy',
+  alemanha: 'germany', franca: 'france', holanda: 'netherlands', belgica: 'belgium',
+  suica: 'switzerland', russia: 'russia', turquia: 'turkey', grecia: 'greece',
+  japao: 'japan', coreia: 'south korea', marrocos: 'morocco', egito: 'egypt',
+};
+
+function normalizarPais(p) {
+  if (!p) return null;
+  const limpo = p.trim().toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+  return PAISES_PT_EN[limpo] || limpo;
+}
+
+async function buscarIdTime(nome, headers, paisHint = null) {
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/teams?search=${encodeURIComponent(nome)}`,
@@ -178,10 +205,21 @@ async function buscarIdTime(nome, headers) {
     // seleção nacional). Prioriza nome exatamente igual (case-insensitive);
     // se não houver, cai pro primeiro resultado como antes.
     const alvo = nome.trim().toLowerCase();
-    const exato = candidatos.find(c => c.team?.name?.trim().toLowerCase() === alvo);
-    return (exato || candidatos[0])?.team?.id || null;
+    const exatos = candidatos.filter(c => c.team?.name?.trim().toLowerCase() === alvo);
+
+    // Nomes de clube se repetem entre países (River Plate, Nacional,
+    // Independiente...). Se o usuário deu uma dica de país explícita e ela
+    // bate com um dos candidatos de nome exato, usa esse — não o primeiro
+    // que a API achar.
+    if (paisHint && exatos.length > 1) {
+      const paisNorm = normalizarPais(paisHint);
+      const comPais = exatos.find(c => normalizarPais(c.team?.country) === paisNorm);
+      if (comPais) return comPais.team.id;
+    }
+
+    return (exatos[0] || candidatos[0])?.team?.id || null;
   } catch (e) {
-    logErro('buscarIdTime', { nome }, e);
+    logErro('buscarIdTime', { nome, paisHint }, e);
     return null;
   }
 }
@@ -526,14 +564,14 @@ async function getFootballData(jogo, mercado) {
   }
   const headers = { 'x-apisports-key': key };
 
-  const { timeA, timeB } = parseTimes(jogo);
+  const { timeA, timeB, paisA, paisB } = parseTimes(jogo);
   if (!timeA || !timeB) {
     return { disponivel: false, motivo: 'Não foi possível identificar os dois times no texto informado (use "Time A vs Time B").' };
   }
 
   const [idA, idB] = await Promise.all([
-    buscarIdTime(timeA, headers),
-    buscarIdTime(timeB, headers),
+    buscarIdTime(timeA, headers, paisA),
+    buscarIdTime(timeB, headers, paisB),
   ]);
 
   if (!idA || !idB) {
