@@ -10,7 +10,6 @@ const MKTS = [
   { id:'duplachance',label:'Dupla Chance',   min:86 },
   { id:'mais15',     label:'+1.5 Gols',      min:83 },
   { id:'mais05',     label:'+0.5 Gols',      min:88 },
-  { id:'tenis',      label:'Tênis',           min:84 },
   { id:'menos25',    label:'-2.5 Gols 1T',   min:86 },
   { id:'layempate',  label:'Lay Empate',     min:84 },
   { id:'under35',    label:'Under 3.5 Gols', min:85 },
