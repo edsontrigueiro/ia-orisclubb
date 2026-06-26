@@ -52,44 +52,89 @@ function ScoreRing({ score, color, size = 108 }) {
 // Painel de estatísticas da grade do dia — sem IA, só dado (forma recente,
 // últimos resultados, H2H, escanteios quando disponível).
 function StatsPanel({ dados }) {
-  function badgesUltimosJogos(jogos) {
-    if (!jogos || jogos.length === 0) return null;
-    return jogos.slice(0, 5).map((j, i) => {
-      const partes = (j.placar || '?-?').split('-').map(Number);
-      const [gh, ga] = partes;
-      const golsPro = j.eh_casa ? gh : ga;
-      const golsContra = j.eh_casa ? ga : gh;
-      let letra = 'E', cor = C.muted;
-      if (golsPro > golsContra) { letra = 'V'; cor = C.green; }
-      else if (golsPro < golsContra) { letra = 'D'; cor = C.red; }
-      return (
-        <span key={i} title={`${j.casa} ${j.placar} ${j.fora}`} style={{
-          display:'inline-flex',alignItems:'center',justifyContent:'center',
-          width:'18px',height:'18px',borderRadius:'4px',
-          background:`${cor}22`,color:cor,fontSize:'9px',fontWeight:800,fontFamily:FONT_MONO,
-        }}>{letra}</span>
-      );
-    });
+  function formatarData(iso) {
+    if (!iso) return '';
+    try {
+      const d = new Date(iso);
+      if (isNaN(d.getTime())) return '';
+      return d.toLocaleDateString('pt-BR', { day:'2-digit', month:'2-digit' });
+    } catch { return ''; }
+  }
+
+  function resultadoJogo(j) {
+    const partes = (j.placar || '?-?').split('-').map(Number);
+    const [gh, ga] = partes;
+    const golsPro = j.eh_casa ? gh : ga;
+    const golsContra = j.eh_casa ? ga : gh;
+    if (golsPro > golsContra) return { letra:'V', cor:C.green };
+    if (golsPro < golsContra) return { letra:'D', cor:C.red };
+    return { letra:'E', cor:C.muted };
+  }
+
+  // Bloco compacto de V-E-D + médias, reaproveitado pra geral/casa/fora.
+  function ResumoForma({ titulo, forma }) {
+    if (!forma) return (
+      <div style={{fontSize:'10.5px',color:C.muted2,marginBottom:'4px'}}>{titulo}: sem dado</div>
+    );
+    return (
+      <div style={{marginBottom:'6px'}}>
+        <div style={{fontSize:'9.5px',fontWeight:700,color:C.muted2,letterSpacing:'.5px',textTransform:'uppercase',marginBottom:'2px'}}>{titulo}</div>
+        <div style={{fontSize:'11.5px',color:C.text,fontFamily:FONT_MONO}}>
+          {forma.vitorias}V {forma.empates}E {forma.derrotas}D
+          <span style={{color:C.muted2}}> ({forma.jogos_considerados}j)</span>
+          <span style={{color:C.muted}}> · {forma.media_gols_marcados}/{forma.media_gols_sofridos} gols</span>
+        </div>
+        {forma.primeiro_tempo && (
+          <div style={{fontSize:'10.5px',color:C.orangeGlow,fontFamily:FONT_MONO,marginTop:'2px'}}>
+            1T: {forma.primeiro_tempo.media_gols_marcados_1t}/{forma.primeiro_tempo.media_gols_sofridos_1t} gols
+            <span style={{color:C.muted2}}> · {forma.primeiro_tempo.pct_jogos_1t_total_baixo}% até 2 gols no 1T</span>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  function ListaJogos({ jogos }) {
+    if (!jogos || jogos.length === 0) return (
+      <div style={{fontSize:'10.5px',color:C.muted2,marginTop:'4px'}}>Sem jogos recentes disponíveis.</div>
+    );
+    return (
+      <div style={{marginTop:'8px'}}>
+        <div style={{fontSize:'9.5px',fontWeight:700,color:C.muted2,letterSpacing:'.5px',textTransform:'uppercase',marginBottom:'4px'}}>Últimos jogos</div>
+        <div style={{display:'flex',flexDirection:'column',gap:'3px'}}>
+          {jogos.map((j, i) => {
+            const { letra, cor } = resultadoJogo(j);
+            const adversario = j.eh_casa ? j.fora : j.casa;
+            return (
+              <div key={i} style={{display:'flex',alignItems:'center',gap:'6px',fontSize:'10.5px'}}>
+                <span style={{width:'15px',height:'15px',flexShrink:0,display:'inline-flex',alignItems:'center',justifyContent:'center',borderRadius:'3px',background:`${cor}22`,color:cor,fontWeight:800,fontSize:'8.5px',fontFamily:FONT_MONO}}>{letra}</span>
+                <span style={{color:C.muted2,fontFamily:FONT_MONO,flexShrink:0}}>{formatarData(j.data)}</span>
+                <span style={{color:C.muted,flexShrink:0}}>{j.eh_casa ? 'casa' : 'fora'}</span>
+                <span style={{color:C.text,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{adversario}</span>
+                <span style={{color:C.text,fontWeight:700,fontFamily:FONT_MONO,flexShrink:0}}>{j.placar}</span>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
   }
 
   function ColunaTime({ nome, forma, jogos }) {
     return (
       <div style={{flex:1,minWidth:0}}>
-        <div style={{fontSize:'12px',fontWeight:700,color:C.text,marginBottom:'7px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{nome}</div>
+        <div style={{fontSize:'13px',fontWeight:700,color:C.text,marginBottom:'8px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{nome}</div>
         {forma ? (
           <>
-            <div style={{fontSize:'11px',color:C.muted,marginBottom:'4px'}}>
-              {forma.vitorias}V {forma.empates}E {forma.derrotas}D <span style={{color:C.muted2}}>({forma.jogos_considerados} jogos)</span>
-            </div>
-            <div style={{fontSize:'11px',color:C.muted,marginBottom:'6px',fontFamily:FONT_MONO}}>
-              {forma.media_gols_marcados} marc. / {forma.media_gols_sofridos} sof.
-            </div>
+            <ResumoForma titulo="Geral" forma={forma}/>
+            <ResumoForma titulo="Em casa" forma={forma.como_mandante}/>
+            <ResumoForma titulo="Fora" forma={forma.como_visitante}/>
             {forma.escanteios && (
               <div style={{fontSize:'11px',color:C.orangeGlow,marginBottom:'6px',fontFamily:FONT_MONO}}>
-                {forma.escanteios.media_escanteios} escanteios/jogo
+                ⛳ {forma.escanteios.media_escanteios} escanteios/jogo ({forma.escanteios.jogos_considerados}j)
               </div>
             )}
-            <div style={{display:'flex',gap:'3px'}}>{badgesUltimosJogos(jogos)}</div>
+            <ListaJogos jogos={jogos}/>
           </>
         ) : (
           <div style={{fontSize:'11px',color:C.muted2}}>Sem dado disponível</div>
@@ -99,27 +144,37 @@ function StatsPanel({ dados }) {
   }
 
   return (
-    <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'10px',padding:'14px'}}>
-      <div style={{display:'flex',gap:'16px',marginBottom:'12px'}}>
+    <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'10px',padding:'16px'}}>
+      <div style={{display:'flex',gap:'20px',marginBottom:'16px',flexWrap:'wrap'}}>
         <ColunaTime nome={dados.time_a} forma={dados.forma_recente_time_a} jogos={dados.jogos_recentes_time_a}/>
         <div style={{width:'1px',background:C.border,flexShrink:0}}/>
         <ColunaTime nome={dados.time_b} forma={dados.forma_recente_time_b} jogos={dados.jogos_recentes_time_b}/>
       </div>
 
+      {dados.modo_copa && (
+        <div style={{fontSize:'10.5px',color:C.muted2,marginBottom:'10px',background:C.bg4,padding:'6px 9px',borderRadius:'6px'}}>
+          🏆 Competição de copa/mata-mata — H2H raro e mando de campo menos relevante são esperados aqui.
+        </div>
+      )}
+
       {dados.escanteios_h2h && (
         <div style={{fontSize:'11px',color:C.orangeGlow,marginBottom:'10px',fontFamily:FONT_MONO}}>
-          H2H: média de {dados.escanteios_h2h.media_escanteios} escanteios/jogo ({dados.escanteios_h2h.jogos_considerados} jogos)
+          ⛳ H2H: média de {dados.escanteios_h2h.media_escanteios} escanteios/jogo ({dados.escanteios_h2h.jogos_considerados} jogos)
         </div>
       )}
 
       {dados.confrontos_diretos ? (
         <div>
-          <div style={{fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1px',textTransform:'uppercase',marginBottom:'6px'}}>Confrontos diretos</div>
-          <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
-            {dados.confrontos_diretos.slice(0, 5).map((h, i) => (
-              <div key={i} style={{display:'flex',justifyContent:'space-between',gap:'8px',fontSize:'11px',color:C.muted}}>
-                <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{h.casa} x {h.fora}</span>
+          <div style={{fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1px',textTransform:'uppercase',marginBottom:'7px'}}>Confrontos diretos ({dados.confrontos_diretos.length})</div>
+          <div style={{display:'flex',flexDirection:'column',gap:'5px'}}>
+            {dados.confrontos_diretos.map((h, i) => (
+              <div key={i} style={{display:'flex',alignItems:'center',gap:'8px',fontSize:'11px',color:C.muted,flexWrap:'wrap'}}>
+                <span style={{color:C.muted2,fontFamily:FONT_MONO,flexShrink:0,width:'42px'}}>{formatarData(h.data)}</span>
+                <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1,minWidth:'80px'}}>{h.casa} x {h.fora}</span>
                 <span style={{fontFamily:FONT_MONO,fontWeight:700,color:C.text,flexShrink:0}}>{h.placar}</span>
+                {h.placar_1t && <span style={{fontSize:'9.5px',color:C.muted2,fontFamily:FONT_MONO,flexShrink:0}}>(1T {h.placar_1t})</span>}
+                {h.mesmo_mando_atual && <span style={{fontSize:'9px',color:C.orangeGlow,flexShrink:0,border:`1px solid ${C.orangeBorder}`,borderRadius:'4px',padding:'1px 4px'}}>mesmo mando</span>}
+                {h.dias_atras != null && h.dias_atras > 730 && <span style={{fontSize:'9px',color:C.muted2,flexShrink:0}}>+2 anos</span>}
               </div>
             ))}
           </div>
