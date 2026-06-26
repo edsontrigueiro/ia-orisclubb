@@ -49,6 +49,88 @@ function ScoreRing({ score, color, size = 108 }) {
   );
 }
 
+// Painel de estatísticas da grade do dia — sem IA, só dado (forma recente,
+// últimos resultados, H2H, escanteios quando disponível).
+function StatsPanel({ dados }) {
+  function badgesUltimosJogos(jogos) {
+    if (!jogos || jogos.length === 0) return null;
+    return jogos.slice(0, 5).map((j, i) => {
+      const partes = (j.placar || '?-?').split('-').map(Number);
+      const [gh, ga] = partes;
+      const golsPro = j.eh_casa ? gh : ga;
+      const golsContra = j.eh_casa ? ga : gh;
+      let letra = 'E', cor = C.muted;
+      if (golsPro > golsContra) { letra = 'V'; cor = C.green; }
+      else if (golsPro < golsContra) { letra = 'D'; cor = C.red; }
+      return (
+        <span key={i} title={`${j.casa} ${j.placar} ${j.fora}`} style={{
+          display:'inline-flex',alignItems:'center',justifyContent:'center',
+          width:'18px',height:'18px',borderRadius:'4px',
+          background:`${cor}22`,color:cor,fontSize:'9px',fontWeight:800,fontFamily:FONT_MONO,
+        }}>{letra}</span>
+      );
+    });
+  }
+
+  function ColunaTime({ nome, forma, jogos }) {
+    return (
+      <div style={{flex:1,minWidth:0}}>
+        <div style={{fontSize:'12px',fontWeight:700,color:C.text,marginBottom:'7px',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{nome}</div>
+        {forma ? (
+          <>
+            <div style={{fontSize:'11px',color:C.muted,marginBottom:'4px'}}>
+              {forma.vitorias}V {forma.empates}E {forma.derrotas}D <span style={{color:C.muted2}}>({forma.jogos_considerados} jogos)</span>
+            </div>
+            <div style={{fontSize:'11px',color:C.muted,marginBottom:'6px',fontFamily:FONT_MONO}}>
+              {forma.media_gols_marcados} marc. / {forma.media_gols_sofridos} sof.
+            </div>
+            {forma.escanteios && (
+              <div style={{fontSize:'11px',color:C.orangeGlow,marginBottom:'6px',fontFamily:FONT_MONO}}>
+                {forma.escanteios.media_escanteios} escanteios/jogo
+              </div>
+            )}
+            <div style={{display:'flex',gap:'3px'}}>{badgesUltimosJogos(jogos)}</div>
+          </>
+        ) : (
+          <div style={{fontSize:'11px',color:C.muted2}}>Sem dado disponível</div>
+        )}
+      </div>
+    );
+  }
+
+  return (
+    <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'10px',padding:'14px'}}>
+      <div style={{display:'flex',gap:'16px',marginBottom:'12px'}}>
+        <ColunaTime nome={dados.time_a} forma={dados.forma_recente_time_a} jogos={dados.jogos_recentes_time_a}/>
+        <div style={{width:'1px',background:C.border,flexShrink:0}}/>
+        <ColunaTime nome={dados.time_b} forma={dados.forma_recente_time_b} jogos={dados.jogos_recentes_time_b}/>
+      </div>
+
+      {dados.escanteios_h2h && (
+        <div style={{fontSize:'11px',color:C.orangeGlow,marginBottom:'10px',fontFamily:FONT_MONO}}>
+          H2H: média de {dados.escanteios_h2h.media_escanteios} escanteios/jogo ({dados.escanteios_h2h.jogos_considerados} jogos)
+        </div>
+      )}
+
+      {dados.confrontos_diretos ? (
+        <div>
+          <div style={{fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1px',textTransform:'uppercase',marginBottom:'6px'}}>Confrontos diretos</div>
+          <div style={{display:'flex',flexDirection:'column',gap:'4px'}}>
+            {dados.confrontos_diretos.slice(0, 5).map((h, i) => (
+              <div key={i} style={{display:'flex',justifyContent:'space-between',gap:'8px',fontSize:'11px',color:C.muted}}>
+                <span style={{overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap',flex:1}}>{h.casa} x {h.fora}</span>
+                <span style={{fontFamily:FONT_MONO,fontWeight:700,color:C.text,flexShrink:0}}>{h.placar}</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
+        <div style={{fontSize:'11px',color:C.muted2}}>Sem confrontos diretos recentes disponíveis.</div>
+      )}
+    </div>
+  );
+}
+
 export default function App() {
   const router = useRouter();
   const [tab, setTab] = useState('analises');
@@ -77,6 +159,13 @@ export default function App() {
   const [loadingJogos, setLoadingJogos] = useState(false);
   const [jogosError, setJogosError] = useState(null);
   const [dataJogos, setDataJogos] = useState(null);
+
+  // Preview de estatísticas por jogo (botão "Ver estatísticas" na grade do
+  // dia) — cache em memória por confronto, pra não rebuscar ao reabrir.
+  const [statsAberto, setStatsAberto] = useState(null);
+  const [statsCache, setStatsCache] = useState({});
+  const [statsLoading, setStatsLoading] = useState(null);
+  const [statsErro, setStatsErro] = useState({});
 
   // Saúde do sistema (substitui o "IA Online" estático por uma checagem real)
   const [health, setHealth] = useState(null);
@@ -137,6 +226,30 @@ export default function App() {
     setJogo(`${timeA} vs ${timeB}`);
     setResult(null); setDecisao(null); setSaved(false);
     setTab('analises');
+  }
+
+  // Abre/fecha o painel de estatísticas de um jogo da grade do dia. Não
+  // chama IA — é só dado real (forma recente, H2H, escanteios), com cache
+  // local pra não rebuscar se o usuário fechar e abrir de novo.
+  async function toggleStats(j) {
+    const key = `${j.timeA}|${j.timeB}`;
+    if (statsAberto === key) { setStatsAberto(null); return; }
+    setStatsAberto(key);
+    if (statsCache[key] || statsLoading === key) return;
+    setStatsLoading(key);
+    setStatsErro(prev => ({ ...prev, [key]: null }));
+    try {
+      const jogoStr = `${j.timeA} vs ${j.timeB}`;
+      const { res, sessionExpired } = await authFetch(`/api/team-stats?jogo=${encodeURIComponent(jogoStr)}`);
+      if (sessionExpired) { goToLoginExpired(); return; }
+      const data = await res.json();
+      if (!res.ok) { setStatsErro(prev => ({ ...prev, [key]: data?.error || 'Não foi possível carregar estatísticas.' })); return; }
+      setStatsCache(prev => ({ ...prev, [key]: data }));
+    } catch {
+      setStatsErro(prev => ({ ...prev, [key]: 'Erro de conexão ao buscar estatísticas.' }));
+    } finally {
+      setStatsLoading(null);
+    }
   }
 
   async function analyze() {
@@ -700,28 +813,63 @@ export default function App() {
                               const horaFormatada = j.hora
                                 ? new Date(j.hora).toLocaleTimeString('pt-BR', { hour:'2-digit', minute:'2-digit' })
                                 : '--:--';
+                              const statsKey = `${j.timeA}|${j.timeB}`;
+                              const statsVisiveis = statsAberto === statsKey;
                               return (
-                                <button key={j.id || ji} onClick={() => analisarJogoDaGrade(j.timeA, j.timeB)} style={{
-                                  width:'100%',display:'flex',alignItems:'center',gap:'12px',
-                                  padding:'12px 14px',background:'none',border:'none',
+                                <div key={j.id || ji} style={{
                                   borderBottom: ji < g.jogos.length - 1 ? `1px solid ${C.border}` : 'none',
-                                  cursor:'pointer',fontFamily:'inherit',textAlign:'left',transition:'background .15s',
                                 }}>
-                                  <div style={{width:'52px',flexShrink:0,fontSize:'12px',fontFamily:FONT_MONO,color: aoVivo ? C.green : C.muted2,fontWeight: aoVivo ? 700 : 500}}>
-                                    {aoVivo ? `${j.minuto ?? ''}'` : finalizado ? 'FIM' : horaFormatada}
+                                  <div style={{display:'flex',alignItems:'center',gap:'8px',padding:'12px 14px'}}>
+                                    <button onClick={() => analisarJogoDaGrade(j.timeA, j.timeB)} style={{
+                                      flex:1,minWidth:0,display:'flex',alignItems:'center',gap:'12px',
+                                      background:'none',border:'none',padding:0,
+                                      cursor:'pointer',fontFamily:'inherit',textAlign:'left',
+                                    }}>
+                                      <div style={{width:'52px',flexShrink:0,fontSize:'12px',fontFamily:FONT_MONO,color: aoVivo ? C.green : C.muted2,fontWeight: aoVivo ? 700 : 500}}>
+                                        {aoVivo ? `${j.minuto ?? ''}'` : finalizado ? 'FIM' : horaFormatada}
+                                      </div>
+                                      <div style={{flex:1,minWidth:0,display:'flex',alignItems:'center',justifyContent:'space-between',gap:'8px'}}>
+                                        <span style={{fontSize:'13px',color:C.text,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
+                                          {j.timeA} <span style={{color:C.muted2}}>x</span> {j.timeB}
+                                        </span>
+                                        {(aoVivo || finalizado) && (
+                                          <span style={{fontSize:'13px',fontFamily:FONT_MONO,fontWeight:700,color: aoVivo ? C.green : C.muted,flexShrink:0}}>
+                                            {j.golsA ?? 0}-{j.golsB ?? 0}
+                                          </span>
+                                        )}
+                                      </div>
+                                    </button>
+                                    {/* Botão separado do clique de analisar — abre o preview de
+                                        estatísticas (forma recente, H2H, escanteios) sem IA. */}
+                                    <button onClick={() => toggleStats(j)} title="Ver estatísticas" style={{
+                                      flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',
+                                      width:'28px',height:'28px',borderRadius:'7px',
+                                      background: statsVisiveis ? C.orangeDim : C.bg4,
+                                      border:`1px solid ${statsVisiveis ? C.orangeBorder : C.border}`,
+                                      cursor:'pointer',
+                                    }}>
+                                      <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={statsVisiveis ? C.orange : C.muted} strokeWidth="2">
+                                        <path d="M18 20V10M12 20V4M6 20v-6"/>
+                                      </svg>
+                                    </button>
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.muted2} strokeWidth="2" style={{flexShrink:0}} onClick={() => analisarJogoDaGrade(j.timeA, j.timeB)}><polyline points="9 18 15 12 9 6"/></svg>
                                   </div>
-                                  <div style={{flex:1,minWidth:0,display:'flex',alignItems:'center',justifyContent:'space-between',gap:'8px'}}>
-                                    <span style={{fontSize:'13px',color:C.text,fontWeight:500,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>
-                                      {j.timeA} <span style={{color:C.muted2}}>x</span> {j.timeB}
-                                    </span>
-                                    {(aoVivo || finalizado) && (
-                                      <span style={{fontSize:'13px',fontFamily:FONT_MONO,fontWeight:700,color: aoVivo ? C.green : C.muted,flexShrink:0}}>
-                                        {j.golsA ?? 0}-{j.golsB ?? 0}
-                                      </span>
-                                    )}
-                                  </div>
-                                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.muted2} strokeWidth="2" style={{flexShrink:0}}><polyline points="9 18 15 12 9 6"/></svg>
-                                </button>
+
+                                  {statsVisiveis && (
+                                    <div style={{padding:'4px 14px 16px',background:C.bg2}}>
+                                      {statsLoading === statsKey ? (
+                                        <div style={{display:'flex',alignItems:'center',gap:'10px',padding:'14px 4px',fontSize:'12px',color:C.muted}}>
+                                          <div style={{width:'16px',height:'16px',border:`2px solid ${C.orangeDim}`,borderTopColor:C.orange,borderRadius:'50%',animation:'spin .7s linear infinite'}}/>
+                                          Buscando estatísticas...
+                                        </div>
+                                      ) : statsErro[statsKey] ? (
+                                        <div style={{fontSize:'12px',color:C.red,padding:'10px 4px'}}>⚠️ {statsErro[statsKey]}</div>
+                                      ) : statsCache[statsKey] ? (
+                                        <StatsPanel dados={statsCache[statsKey]} />
+                                      ) : null}
+                                    </div>
+                                  )}
+                                </div>
                               );
                             })}
                           </div>
