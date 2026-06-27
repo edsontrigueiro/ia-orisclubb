@@ -409,6 +409,26 @@ async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios =
   }
 }
 
+// /teams/statistics também devolve gols agrupados por faixa de minuto
+// ("0-15", "16-30", "31-45", etc.) — uma visão de TEMPORADA INTEIRA de quando
+// os gols desse time costumam sair, com amostra bem maior que os ~10 jogos
+// usados pra calcular "primeiro_tempo" em forma_recente (que é derivado
+// jogo a jogo do placar do intervalo). Usa os totais (não o "percentage" que
+// a API já manda como string formatada) pra não depender de parsing de texto.
+function pctGolsAteOIntervalo(porMinuto) {
+  if (!porMinuto) return null;
+  const faixas1T = ['0-15', '16-30', '31-45'];
+  let total1T = 0, totalGeral = 0;
+  for (const faixa of Object.keys(porMinuto)) {
+    const t = porMinuto[faixa]?.total;
+    if (t == null) continue;
+    totalGeral += t;
+    if (faixas1T.includes(faixa)) total1T += t;
+  }
+  if (totalGeral === 0) return null;
+  return +((total1T / totalGeral) * 100).toFixed(0);
+}
+
 async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
   if (!leagueId || !season) return null;
   try {
@@ -429,6 +449,12 @@ async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
       media_gols_sofridos: s.goals?.against?.average?.total ?? null,
       jogos_sem_sofrer_gol: s.clean_sheet?.total ?? null,
       jogos_sem_marcar_gol: s.failed_to_score?.total ?? null,
+      // % dos gols da TEMPORADA (marcados/sofridos) que saíram até os 45min
+      // — sinal de "começa rápido"/"começa devagar" com amostra de temporada
+      // inteira, não só os últimos 10 jogos. Null se a API não trouxer esse
+      // detalhamento pra essa liga/temporada (cobertura varia por competição).
+      pct_gols_marcados_1t_temporada: pctGolsAteOIntervalo(s.goals?.for?.minute),
+      pct_gols_sofridos_1t_temporada: pctGolsAteOIntervalo(s.goals?.against?.minute),
       // A própria resposta de /teams/statistics já vem com o recorte casa/fora
       // pra esses campos — não custa nenhuma chamada extra, só não estávamos
       // lendo. É uma segunda fonte de mando de campo (presa à temporada
