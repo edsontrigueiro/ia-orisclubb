@@ -429,6 +429,31 @@ async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
       media_gols_sofridos: s.goals?.against?.average?.total ?? null,
       jogos_sem_sofrer_gol: s.clean_sheet?.total ?? null,
       jogos_sem_marcar_gol: s.failed_to_score?.total ?? null,
+      // A própria resposta de /teams/statistics já vem com o recorte casa/fora
+      // pra esses campos — não custa nenhuma chamada extra, só não estávamos
+      // lendo. É uma segunda fonte de mando de campo (presa à temporada
+      // atual), complementar ao "como_mandante/como_visitante" calculado a
+      // partir dos jogos individuais em "forma_recente_time_a/b".
+      como_mandante: s.fixtures?.played?.home != null ? {
+        jogos_disputados: s.fixtures?.played?.home ?? null,
+        vitorias: s.fixtures?.wins?.home ?? null,
+        empates: s.fixtures?.draws?.home ?? null,
+        derrotas: s.fixtures?.loses?.home ?? null,
+        media_gols_marcados: s.goals?.for?.average?.home ?? null,
+        media_gols_sofridos: s.goals?.against?.average?.home ?? null,
+        jogos_sem_sofrer_gol: s.clean_sheet?.home ?? null,
+        jogos_sem_marcar_gol: s.failed_to_score?.home ?? null,
+      } : null,
+      como_visitante: s.fixtures?.played?.away != null ? {
+        jogos_disputados: s.fixtures?.played?.away ?? null,
+        vitorias: s.fixtures?.wins?.away ?? null,
+        empates: s.fixtures?.draws?.away ?? null,
+        derrotas: s.fixtures?.loses?.away ?? null,
+        media_gols_marcados: s.goals?.for?.average?.away ?? null,
+        media_gols_sofridos: s.goals?.against?.average?.away ?? null,
+        jogos_sem_sofrer_gol: s.clean_sheet?.away ?? null,
+        jogos_sem_marcar_gol: s.failed_to_score?.away ?? null,
+      } : null,
     };
   } catch (e) {
     logErro('buscarEstatisticasTime', { teamId, leagueId, season }, e);
