@@ -115,6 +115,109 @@ const CRITERIOS_MERCADO = {
 - Escanteio é um dado mais "ruidoso" que gol (varia mais jogo a jogo) — seja mais conservador aqui do que seria em mercados de gols com números parecidos. Exija amostra mínima de 8 jogos com dado de escanteio disponível pra AMBOS os times. Esse mercado tende a ser mais confiável em ligas de clube do que em jogos de seleção, justamente por causa da cobertura de dado.`,
 };
 
+// ── Enforcement determinístico (Gates 1-3) ──────────────────────────────────
+// A Regra 12 do system prompt PEDE pra IA descontar confiança quando um
+// percentual alto vem de amostra pequena, mas isso é só instrução de texto —
+// nada no código garantia que ela de fato fizesse isso. As funções abaixo
+// rodam DEPOIS da IA responder e revertem a aprovação na marra quando o dado
+// real (não o que a IA disse) não sustenta, registrando um alerta explícito
+// em vez de mudar o resultado em silêncio.
+// Gate 1: amostra geral mínima (todos os mercados).
+// Gate 2: qualidade geral do dado da competição (todos os mercados) — pega
+//         ligas de cobertura ruim (2ª/3ª divisão, ligas pequenas/novas) sem
+//         precisar saber o nome da liga.
+// Gate 3: amostra fina de 1º tempo (só -2.5 Gols 1T e +0.5 Gols 1T).
+const AMOSTRA_MINIMA_GERAL = 8;   // mesmo número exigido em todo CRITERIOS_MERCADO
+const AMOSTRA_MINIMA_RECORTE = 6; // recorte mandante/visitante/1T — limiar da Regra 12
+
+// Mercados cujo critério depende do recorte de 1º tempo (mando-específico ou
+// geral em modo copa) — é onde a amostra "fina" mais aparece, e foi
+// justamente onde caíram 2 dos 3 últimos reds registrados.
+const MERCADOS_1T = new Set(['-2.5 Gols 1T', '+0.5 Gols 1T']);
+
+function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
+  if (!result.aprovado) return; // só precisa intervir quando a IA aprovou
+
+  const formaA = dadosReais.forma_recente_time_a;
+  const formaB = dadosReais.forma_recente_time_b;
+
+  // Gate 1 — amostra geral mínima de 8 jogos, a mesma exigida em TODO
+  // mercado no prompt. Sem isso pra qualquer um dos dois times, não existe
+  // critério estatístico que se sustente — reprova sem excepção, mesmo que
+  // a IA tenha dado um score acima do mínimo.
+  const amostraGeralA = formaA?.jogos_considerados ?? null;
+  const amostraGeralB = formaB?.jogos_considerados ?? null;
+  if (amostraGeralA == null || amostraGeralA < AMOSTRA_MINIMA_GERAL ||
+      amostraGeralB == null || amostraGeralB < AMOSTRA_MINIMA_GERAL) {
+    result.aprovado = false;
+    result.score = Math.min(result.score, min - 1);
+    result.alertas = [
+      ...(result.alertas || []),
+      `[Enforcement automático] Amostra geral insuficiente (mínimo ${AMOSTRA_MINIMA_GERAL} jogos) — Time A: ${amostraGeralA ?? 'sem dado'}, Time B: ${amostraGeralB ?? 'sem dado'}. Aprovação da IA foi revertida pelo código.`,
+    ];
+    return;
+  }
+
+  // Gate 2 — qualidade geral do dado, vale pra TODOS os mercados, não só
+  // 1º tempo. Não depende de saber o nome da liga: mede 3 sinais que ficam
+  // fracos automaticamente em ligas de cobertura pior (2ª/3ª divisão, ligas
+  // novas/pequenas), sem precisar manter lista nenhuma de liga proibida.
+  // Se 2 ou mais desses 3 sinais vierem fracos juntos, reprova — porque é
+  // exatamente essa combinação (sem odd real + sem cross-check de temporada
+  // + H2H velho/vazio) que apareceu nos 4 reds recentes, todos em ligas
+  // menores (Ykkönen, Superettan, Torneo A, liga canadense).
+  const oddAusente = dadosReais.odds_mercado_real == null;
+  const crossCheckTemporadaAusente = !!dadosReais.estatisticas_indisponiveis;
+  const h2hVazio = !!dadosReais.confrontos_diretos_indisponivel;
+  const h2hSoAntigo = !h2hVazio && Array.isArray(dadosReais.confrontos_diretos) &&
+    dadosReais.confrontos_diretos.every(j => j.dias_atras == null || j.dias_atras > 730);
+  const h2hFraco = h2hVazio || h2hSoAntigo;
+
+  const sinaisFracos = [oddAusente, crossCheckTemporadaAusente, h2hFraco].filter(Boolean).length;
+  if (sinaisFracos >= 2) {
+    result.aprovado = false;
+    result.score = Math.min(result.score, min - 1);
+    result.alertas = [
+      ...(result.alertas || []),
+      `[Enforcement automático] Qualidade geral de dado insuficiente pra essa competição — odd real ${oddAusente ? 'ausente' : 'disponível'}, estatística de temporada ${crossCheckTemporadaAusente ? 'ausente' : 'disponível'}, H2H ${h2hFraco ? 'vazio ou só com jogos com mais de 2 anos' : 'ok'}. Aprovação da IA foi revertida pelo código — Gate 2.`,
+    ];
+    return;
+  }
+
+  // Gate 3 — específico de mercados de 1º tempo: o recorte mais granular
+  // (mando + 1T, ou 1T geral combinado em modo copa, igual a Regra 11 já
+  // manda priorizar) precisa de pelo menos AMOSTRA_MINIMA_RECORTE jogos com
+  // dado de 1º tempo disponível. Sem isso, mesmo um percentual de 100%
+  // citado pela IA é estatisticamente frágil demais pra sustentar aprovação
+  // sozinho — só aceita se houver confirmação por dado de TEMPORADA INTEIRA
+  // (estatisticas_time_a/b), que é exatamente o cross-check que a Regra 12
+  // pede antes de confiar num recorte pequeno.
+  if (MERCADOS_1T.has(mercado)) {
+    const modoCopa = dadosReais.modo_copa;
+    const recorteA = modoCopa ? formaA?.primeiro_tempo : formaA?.como_mandante?.primeiro_tempo;
+    const recorteB = modoCopa ? formaB?.primeiro_tempo : formaB?.como_visitante?.primeiro_tempo;
+    const amostra1tA = recorteA?.jogos_considerados ?? null;
+    const amostra1tB = recorteB?.jogos_considerados ?? null;
+
+    const temCrossCheck =
+      dadosReais.estatisticas_time_a?.pct_gols_marcados_1t_temporada != null &&
+      dadosReais.estatisticas_time_b?.pct_gols_sofridos_1t_temporada != null;
+
+    const amostraFragil =
+      amostra1tA == null || amostra1tB == null ||
+      amostra1tA <= AMOSTRA_MINIMA_RECORTE || amostra1tB <= AMOSTRA_MINIMA_RECORTE;
+
+    if (amostraFragil && !temCrossCheck) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] Dado de 1º tempo com amostra pequena ou ausente no recorte usado (Time A: ${amostra1tA ?? 'sem dado'} jogos, Time B: ${amostra1tB ?? 'sem dado'} jogos) e sem confirmação por dado de temporada inteira. Aprovação da IA foi revertida pelo código — Regra 12 (Gate 3).`,
+      ];
+    }
+  }
+}
+
 function demoResult(jogo, mercado, motivo) {
   const min = MERCADOS[mercado]?.min || 82;
   const score = min + Math.floor(Math.random() * 15);
@@ -237,6 +340,12 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
     result._minScore = min;
     result._dadosReaisUsados = dadosReais.disponivel;
     result._oddsReais = dadosReais.odds_mercado_real || null;
+
+    // Reverte a aprovação na marra se o dado real não sustenta, mesmo que a
+    // IA tenha aprovado — não depende mais só da IA "lembrar" da Regra 12.
+    if (dadosReais.disponivel) {
+      aplicarEnforcementDeterministico(mercado, dadosReais, result, min);
+    }
 
     // Só cacheia análise real (nunca modo demo, nunca erro).
     await salvarCache(jogo, mercado, result);
