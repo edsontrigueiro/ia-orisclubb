@@ -375,8 +375,15 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
     // sem travar a resposta: se o insert falhar, a análise ainda volta
     // normal pro usuário — perder esse log não pode quebrar a feature
     // principal.
-    registrarHistoricoAnalise(session.userId, jogo, mercado, result, min)
-      .catch(e => logErro('analises_historico_insert', { jogo, mercado }, e));
+    // SÓ loga quando havia dado real disponível (dadosReais.disponivel).
+    // Quando a API-Football não acha os times, a IA reprova por instrução
+    // da Regra 3 (sem dado = reprova), não por critério estatístico — isso
+    // não ensina nada sobre calibração de score, só suja a Auditoria com
+    // sinal sem nenhuma previsão de verdade por trás.
+    if (dadosReais.disponivel) {
+      registrarHistoricoAnalise(session.userId, jogo, mercado, result, min)
+        .catch(e => logErro('analises_historico_insert', { jogo, mercado }, e));
+    }
 
     // Só cacheia análise real (nunca modo demo, nunca erro).
     await salvarCache(jogo, mercado, result);
