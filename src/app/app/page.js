@@ -1290,6 +1290,11 @@ export default function App() {
                               <div style={{fontSize:'12px',color:C.muted}}>
                                 Score {a.score}/100 (mín. {a.min_score}) · {new Date(a.analisado_em).toLocaleDateString('pt-BR')}
                                 {!!(a.alertas || []).length && <span style={{color:C.orangeGlow}}> · {a.alertas.length} alerta(s)</span>}
+                                {' · '}
+                                <button onClick={() => setDetalheAberto(detalheAberto === a.id ? null : a.id)}
+                                  style={{background:'none',border:'none',color:C.orange,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',padding:0}}>
+                                  {detalheAberto === a.id ? 'Ocultar detalhes ▲' : 'Ver detalhes ▼'}
+                                </button>
                               </div>
                             </div>
                             <div style={{display:'flex',gap:'7px',flexShrink:0}}>
@@ -1309,6 +1314,36 @@ export default function App() {
                               )}
                             </div>
                           </div>
+                          {detalheAberto === a.id && (
+                            <div style={{padding:'14px 0 0',borderTop:`1px solid ${C.border}`,marginTop:'12px',display:'flex',flexDirection:'column',gap:'10px',fontSize:'12px'}}>
+                              {!!(a.criterios_ok || []).length && (
+                                <div>
+                                  <div style={{color:C.green,fontWeight:700,fontSize:'10px',letterSpacing:'1px',marginBottom:'5px'}}>CRITÉRIOS ATENDIDOS</div>
+                                  <ul style={{margin:0,paddingLeft:'18px',color:C.text,lineHeight:1.6}}>
+                                    {a.criterios_ok.map((c, i) => <li key={i}>{c}</li>)}
+                                  </ul>
+                                </div>
+                              )}
+                              {!!(a.criterios_no || []).length && (
+                                <div>
+                                  <div style={{color:C.red,fontWeight:700,fontSize:'10px',letterSpacing:'1px',marginBottom:'5px'}}>CRITÉRIOS NÃO ATENDIDOS</div>
+                                  <ul style={{margin:0,paddingLeft:'18px',color:C.text,lineHeight:1.6}}>
+                                    {a.criterios_no.map((c, i) => <li key={i}>{c}</li>)}
+                                  </ul>
+                                </div>
+                              )}
+                              {!!(a.alertas || []).length ? (
+                                <div>
+                                  <div style={{color:C.orangeGlow,fontWeight:700,fontSize:'10px',letterSpacing:'1px',marginBottom:'5px'}}>⚠ ALERTAS</div>
+                                  <ul style={{margin:0,paddingLeft:'18px',color:C.text,lineHeight:1.6}}>
+                                    {a.alertas.map((al, i) => <li key={i}>{al}</li>)}
+                                  </ul>
+                                </div>
+                              ) : (
+                                <div style={{color:C.muted2,fontSize:'11px',fontStyle:'italic'}}>Sem alertas registrados.</div>
+                              )}
+                            </div>
+                          )}
                         </div>
                       );
                     })}
