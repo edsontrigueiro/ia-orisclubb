@@ -22,6 +22,7 @@ const NAV = [
   { id:'analises',    label:'Análises',     icon:'M22 12h-4l-3 9L9 3l-3 9H2' },
   { id:'jogosdodia',  label:'Jogos do Dia', icon:'M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z' },
   { id:'historico',   label:'Histórico',    icon:'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z' },
+  { id:'auditoria',   label:'Auditoria',    icon:'M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11' },
   { id:'desempenho',  label:'Desempenho',   icon:'M23 6 13.5 15.5 8.5 10.5 1 18 M17 6 23 6 23 12' },
 ];
 
@@ -207,6 +208,12 @@ export default function App() {
   // Histórico state
   const [signals, setSignals] = useState([]);
   const [loadingSignals, setLoadingSignals] = useState(false);
+  const [detalheAberto, setDetalheAberto] = useState(null);
+  const [analisesHistorico, setAnalisesHistorico] = useState([]);
+  const [loadingAnalises, setLoadingAnalises] = useState(false);
+  const [analisesError, setAnalisesError] = useState(null);
+  const [marcandoId, setMarcandoId] = useState(null);
+  const [filtroAuditoria, setFiltroAuditoria] = useState('todas'); // todas | aprovadas | reprovadas | sem_resultado
   const [updatingId, setUpdatingId] = useState(null);
 
   // Jogos do dia state
@@ -244,7 +251,8 @@ export default function App() {
 
   useEffect(() => {
     if (authReady && tab === 'historico') loadSignals();
-    if (authReady && tab === 'desempenho') loadSignals();
+    if (authReady && tab === 'desempenho') { loadSignals(); loadAnalisesHistorico(); }
+    if (authReady && tab === 'auditoria') loadAnalisesHistorico();
     if (authReady && tab === 'jogosdodia' && jogosDoDia.length === 0 && !jogosError) loadJogosDoDia();
   }, [tab, authReady]);
 
@@ -262,6 +270,36 @@ export default function App() {
       if (data.signals) setSignals(data.signals);
     } catch {} finally { setLoadingSignals(false); }
   }, []);
+
+  // Carrega o universo COMPLETO de análises reais já feitas (aprovadas e
+  // reprovadas, pegas ou não) — é o dado que falta pra calibrar o sistema
+  // sem viés de "só medi o que escolhi apostar".
+  const loadAnalisesHistorico = useCallback(async () => {
+    setLoadingAnalises(true); setAnalisesError(null);
+    try {
+      const { res, sessionExpired } = await authFetch('/api/analises-historico');
+      if (sessionExpired) { goToLoginExpired(); return; }
+      const data = await res.json();
+      if (!res.ok) { setAnalisesError(data?.error || 'Não foi possível carregar a auditoria.'); return; }
+      setAnalisesHistorico(data.analises || []);
+    } catch { setAnalisesError('Erro de conexão ao buscar a auditoria.'); }
+    finally { setLoadingAnalises(false); }
+  }, []);
+
+  // Marca o resultado real de uma análise mesmo que o usuário não tenha
+  // apostado nela — é assim que sinal REJEITADO entra na conta também.
+  async function marcarResultadoAnalise(id, resultado) {
+    setMarcandoId(id);
+    try {
+      const { sessionExpired } = await authFetch('/api/analises-historico', {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id, resultado }),
+      });
+      if (sessionExpired) { goToLoginExpired(); return; }
+      await loadAnalisesHistorico();
+    } catch {} finally { setMarcandoId(null); }
+  }
 
   // dataAlvo opcional, formato YYYY-MM-DD. Sem isso, o backend assume HOJE
   // (fuso America/Sao_Paulo) — é assim que o botão "Hoje" funciona, sem
@@ -391,8 +429,10 @@ export default function App() {
         competicao: result.competicao,
         mercado: mkt,
         score: result.score,
+        min_score: result._minScore ?? mktInfo.min,
         criterios_ok: result.criterios_atendidos || [],
         criterios_no: result.criterios_nao_atendidos || [],
+        alertas: result.alertas || [],
         insight: result.insight,
         resumo: result.resumo,
         decisao,
@@ -456,6 +496,41 @@ export default function App() {
   const stakeTotal = encerrados.reduce((acc, s) => acc + (s.stake || 0), 0);
   const roi = stakeTotal > 0 ? (lucroTotal / stakeTotal) * 100 : 0;
   const winRate = encerrados.length > 0 ? (greens.length / encerrados.length) * 100 : 0;
+
+  // ── Calibração por faixa de score ──
+  // Junta TODO sinal com resultado conhecido — os que foram apostados
+  // (`signals`) e os que só foram analisados e marcados manualmente na
+  // Auditoria (`analises_historico`), mesmo sem ter sido apostado. Sem essa
+  // junção, a calibração fica cega pro que foi rejeitado.
+  // A faixa usa MARGEM (score - score mínimo do mercado), não o score bruto
+  // — assim um score 90 num mercado de mínimo 88 (margem 2, sinal raspando)
+  // entra na mesma faixa que um score 84 num mercado de mínimo 82 (margem
+  // 2 também), porque o que importa é "quão acima do mínimo", não o número
+  // absoluto, que varia de mercado pra mercado.
+  const FAIXAS_MARGEM = [
+    { label: '0-2 (raspando o mínimo)', min: 0, max: 2 },
+    { label: '3-5', min: 3, max: 5 },
+    { label: '6-9', min: 6, max: 9 },
+    { label: '10+', min: 10, max: Infinity },
+  ];
+  const todosComResultado = [
+    ...encerrados.map(s => ({ score: s.score, min_score: s.min_score, resultado: s.resultado })),
+    ...analisesHistorico.filter(a => a.resultado != null).map(a => ({ score: a.score, min_score: a.min_score, resultado: a.resultado })),
+  ].filter(s => s.score != null && s.min_score != null);
+  const calibracaoPorFaixa = FAIXAS_MARGEM.map(faixa => {
+    const doGrupo = todosComResultado.filter(s => {
+      const margem = s.score - s.min_score;
+      return margem >= faixa.min && margem <= faixa.max;
+    });
+    const greensGrupo = doGrupo.filter(s => s.resultado === 'green').length;
+    return {
+      ...faixa,
+      total: doGrupo.length,
+      greens: greensGrupo,
+      winRate: doGrupo.length > 0 ? (greensGrupo / doGrupo.length) * 100 : null,
+    };
+  });
+  const amostraCalibracaoTotal = todosComResultado.length;
 
   // A API devolve os sinais do mais novo pro mais antigo (pra exibir o
   // Histórico assim). Pra curva de lucro e drawdown fazerem sentido como
@@ -1042,7 +1117,7 @@ export default function App() {
                     const isGreen = s.resultado === 'green';
                     const isRed = s.resultado === 'red';
                     const borderColor = isGreen ? C.green : isRed ? C.red : C.border;
-                    const scoreColor = s.score >= (s._minScore || 82) ? C.green : C.red;
+                    const scoreColor = s.score >= (s.min_score ?? 82) ? C.green : C.red;
                     const lucBruto = s.stake && s.odd ? (s.stake * s.odd) - s.stake : null;
                     return (
                       <div key={s.id} style={{background:C.bg3,border:`1px solid ${borderColor}`,borderRadius:'14px',overflow:'hidden',transition:'border .18s'}}>
@@ -1064,6 +1139,10 @@ export default function App() {
                                 <span>Stake: <strong style={{color:C.text}}>R${fmt(s.stake)}</strong></span>
                                 {lucBruto !== null && <span>Lucro pot.: <strong style={{color:C.green}}>+R${fmt(lucBruto)}</strong></span>}
                                 <span style={{color:C.muted2}}>{new Date(s.analisado_em).toLocaleDateString('pt-BR')}</span>
+                                <button onClick={() => setDetalheAberto(detalheAberto === s.id ? null : s.id)}
+                                  style={{background:'none',border:'none',color:C.orange,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',padding:0}}>
+                                  {detalheAberto === s.id ? 'Ocultar detalhes ▲' : 'Ver detalhes ▼'}
+                                </button>
                               </div>
                             </div>
                             <div style={{flexShrink:0,textAlign:'right'}}>
@@ -1091,11 +1170,151 @@ export default function App() {
                             </div>
                           </div>
                         </div>
+                        {detalheAberto === s.id && (
+                          <div style={{padding:'0 16px 16px',borderTop:`1px solid ${C.border}`,marginTop:'2px'}}>
+                            <div style={{display:'flex',flexDirection:'column',gap:'10px',paddingTop:'14px',fontSize:'12px'}}>
+                              <div>
+                                <div style={{color:C.muted2,fontWeight:700,fontSize:'10px',letterSpacing:'1px',marginBottom:'5px'}}>SCORE MÍNIMO DO MERCADO</div>
+                                <div style={{color:C.text}}>{s.min_score ?? '— (sinal salvo antes dessa info existir)'}</div>
+                              </div>
+                              {!!(s.criterios_ok || []).length && (
+                                <div>
+                                  <div style={{color:C.green,fontWeight:700,fontSize:'10px',letterSpacing:'1px',marginBottom:'5px'}}>CRITÉRIOS ATENDIDOS</div>
+                                  <ul style={{margin:0,paddingLeft:'18px',color:C.text,lineHeight:1.6}}>
+                                    {s.criterios_ok.map((c, i) => <li key={i}>{c}</li>)}
+                                  </ul>
+                                </div>
+                              )}
+                              {!!(s.criterios_no || []).length && (
+                                <div>
+                                  <div style={{color:C.red,fontWeight:700,fontSize:'10px',letterSpacing:'1px',marginBottom:'5px'}}>CRITÉRIOS NÃO ATENDIDOS</div>
+                                  <ul style={{margin:0,paddingLeft:'18px',color:C.text,lineHeight:1.6}}>
+                                    {s.criterios_no.map((c, i) => <li key={i}>{c}</li>)}
+                                  </ul>
+                                </div>
+                              )}
+                              {!!(s.alertas || []).length ? (
+                                <div>
+                                  <div style={{color:C.orangeGlow,fontWeight:700,fontSize:'10px',letterSpacing:'1px',marginBottom:'5px'}}>⚠ ALERTAS DA IA</div>
+                                  <ul style={{margin:0,paddingLeft:'18px',color:C.text,lineHeight:1.6}}>
+                                    {s.alertas.map((a, i) => <li key={i}>{a}</li>)}
+                                  </ul>
+                                </div>
+                              ) : (
+                                <div style={{color:C.muted2,fontSize:'11px',fontStyle:'italic'}}>
+                                  Sem alertas registrados {s.min_score == null ? '(sinal salvo antes desse campo existir — não dá pra saber se a IA alertou algo nessa análise)' : 'nessa análise.'}
+                                </div>
+                              )}
+                              {s.insight && (
+                                <div>
+                                  <div style={{color:C.muted2,fontWeight:700,fontSize:'10px',letterSpacing:'1px',marginBottom:'5px'}}>INSIGHT</div>
+                                  <div style={{color:C.text,lineHeight:1.5}}>{s.insight}</div>
+                                </div>
+                              )}
+                              {s.resumo && (
+                                <div>
+                                  <div style={{color:C.muted2,fontWeight:700,fontSize:'10px',letterSpacing:'1px',marginBottom:'5px'}}>RESUMO OPERACIONAL</div>
+                                  <div style={{color:C.text,lineHeight:1.5}}>{s.resumo}</div>
+                                </div>
+                              )}
+                            </div>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
                 </div>
               )}
+            </div>
+          )}
+
+          {/* ════ AUDITORIA ════ */}
+          {/* Universo COMPLETO de análises reais (aprovadas e reprovadas,
+              pegas ou não) — é onde dá pra marcar o resultado real de um
+              sinal REJEITADO, pra calibrar o sistema sem o viés de só medir
+              o que foi escolhido pra apostar. */}
+          {tab === 'auditoria' && (
+            <div>
+              <div style={{fontSize:'21px',fontWeight:800,letterSpacing:'-.3px',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Auditoria</div>
+              <div style={{fontSize:'13px',color:C.muted,marginBottom:'20px'}}>
+                Todo sinal já analisado, aprovado ou reprovado — marque o resultado real quando souber, mesmo sem ter apostado.
+              </div>
+
+              <div style={{display:'flex',gap:'8px',marginBottom:'18px',flexWrap:'wrap'}}>
+                {[
+                  {id:'todas',label:'Todas'},
+                  {id:'aprovadas',label:'Aprovadas'},
+                  {id:'reprovadas',label:'Reprovadas'},
+                  {id:'sem_resultado',label:'Sem resultado marcado'},
+                ].map(f => (
+                  <button key={f.id} onClick={() => setFiltroAuditoria(f.id)} style={{
+                    background: filtroAuditoria === f.id ? C.orangeDim : C.bg3,
+                    border: `1px solid ${filtroAuditoria === f.id ? C.orangeBorder : C.border}`,
+                    color: filtroAuditoria === f.id ? C.orangeGlow : C.muted,
+                    borderRadius:'20px',padding:'6px 14px',fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',
+                  }}>{f.label}</button>
+                ))}
+              </div>
+
+              {loadingAnalises ? (
+                <div style={{textAlign:'center',padding:'48px',color:C.muted,fontSize:'13px'}}>Carregando...</div>
+              ) : analisesError ? (
+                <div style={{background:C.redDim,border:'1px solid rgba(255,77,77,.3)',borderRadius:'12px',padding:'16px',color:C.red,fontSize:'13px'}}>{analisesError}</div>
+              ) : (() => {
+                const filtradas = analisesHistorico.filter(a => {
+                  if (filtroAuditoria === 'aprovadas') return a.aprovado;
+                  if (filtroAuditoria === 'reprovadas') return !a.aprovado;
+                  if (filtroAuditoria === 'sem_resultado') return !a.resultado;
+                  return true;
+                });
+                return filtradas.length === 0 ? (
+                  <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'14px',padding:'48px 32px',textAlign:'center',color:C.muted,fontSize:'13px'}}>
+                    Nenhuma análise nesse filtro ainda.
+                  </div>
+                ) : (
+                  <div style={{display:'flex',flexDirection:'column',gap:'10px'}}>
+                    {filtradas.map(a => {
+                      const corBorda = a.resultado === 'green' ? C.green : a.resultado === 'red' ? C.red : C.border;
+                      return (
+                        <div key={a.id} style={{background:C.bg3,border:`1px solid ${corBorda}`,borderRadius:'14px',padding:'14px 16px'}}>
+                          <div style={{display:'flex',alignItems:'flex-start',gap:'12px',flexWrap:'wrap',justifyContent:'space-between'}}>
+                            <div style={{flex:1,minWidth:0}}>
+                              <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap',marginBottom:'4px'}}>
+                                <span style={{fontSize:'14px',fontWeight:700,color:C.text}}>{a.evento}</span>
+                                <span style={{background:C.orangeDim,color:C.orangeGlow,border:`1px solid ${C.orangeBorder}`,borderRadius:'20px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>{a.mercado}</span>
+                                {a.competicao && <span style={{background:C.bg4,color:C.muted,border:`1px solid ${C.border}`,borderRadius:'20px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>{a.competicao}</span>}
+                                <span style={{background: a.aprovado ? C.greenDim : C.redDim,color: a.aprovado ? C.green : C.red,border:`1px solid ${a.aprovado ? 'rgba(0,208,132,.3)' : 'rgba(255,77,77,.3)'}`,borderRadius:'20px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>
+                                  {a.aprovado ? 'APROVADO' : 'REPROVADO'}
+                                </span>
+                              </div>
+                              <div style={{fontSize:'12px',color:C.muted}}>
+                                Score {a.score}/100 (mín. {a.min_score}) · {new Date(a.analisado_em).toLocaleDateString('pt-BR')}
+                                {!!(a.alertas || []).length && <span style={{color:C.orangeGlow}}> · {a.alertas.length} alerta(s)</span>}
+                              </div>
+                            </div>
+                            <div style={{display:'flex',gap:'7px',flexShrink:0}}>
+                              {a.resultado ? (
+                                <div style={{background: a.resultado === 'green' ? C.greenDim : C.redDim,border:`1px solid ${a.resultado === 'green' ? 'rgba(0,208,132,.3)' : 'rgba(255,77,77,.3)'}`,borderRadius:'20px',padding:'4px 13px',fontSize:'11px',fontWeight:800,color: a.resultado === 'green' ? C.green : C.red,letterSpacing:'.5px'}}>
+                                  {a.resultado === 'green' ? '✓ GREEN' : '✗ RED'}
+                                </div>
+                              ) : (
+                                <>
+                                  <button onClick={() => marcarResultadoAnalise(a.id, 'green')} disabled={marcandoId === a.id} style={{background:C.greenDim,border:'1px solid rgba(0,208,132,.3)',borderRadius:'8px',padding:'7px 13px',color:C.green,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+                                    {marcandoId === a.id ? '...' : '✓ Green'}
+                                  </button>
+                                  <button onClick={() => marcarResultadoAnalise(a.id, 'red')} disabled={marcandoId === a.id} style={{background:C.redDim,border:'1px solid rgba(255,77,77,.25)',borderRadius:'8px',padding:'7px 13px',color:C.red,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+                                    {marcandoId === a.id ? '...' : '✗ Red'}
+                                  </button>
+                                </>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
             </div>
           )}
 
@@ -1133,6 +1352,41 @@ export default function App() {
                         <div style={{fontSize:'11px',color:C.muted}}>{k.sub}</div>
                       </div>
                     ))}
+                  </div>
+
+                  {/* Calibração por faixa de score — junta apostado + auditoria
+                      manual, pra mostrar se score realmente correlaciona com
+                      taxa de acerto real ou se é só decoração. */}
+                  <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',overflow:'hidden',marginBottom:'16px'}}>
+                    <div style={{padding:'13px 16px',borderBottom:`1px solid ${C.border}`}}>
+                      <div style={{fontSize:'13px',fontWeight:700,marginBottom:'2px'}}>Calibração por Faixa de Score</div>
+                      <div style={{fontSize:'11px',color:C.muted}}>
+                        Score acima do mínimo do mercado vs. taxa de acerto real · amostra total: {amostraCalibracaoTotal}
+                        {amostraCalibracaoTotal < 50 && ' (ainda pequena pra confiar no número — é tendência, não conclusão)'}
+                      </div>
+                    </div>
+                    <div style={{overflowX:'auto'}}>
+                      <table style={{width:'100%',borderCollapse:'collapse',minWidth:'480px'}}>
+                        <thead>
+                          <tr style={{background:C.bg4}}>
+                            {['Margem sobre o mínimo','Sinais','Win Rate'].map(h => (
+                              <th key={h} style={{padding:'9px 14px',fontSize:'9.5px',fontWeight:700,letterSpacing:'1.2px',textTransform:'uppercase',color:C.muted2,textAlign:'left',whiteSpace:'nowrap'}}>{h}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {calibracaoPorFaixa.map((f) => (
+                            <tr key={f.label} style={{borderBottom:`1px solid ${C.border}`}}>
+                              <td style={{padding:'11px 14px',fontSize:'12.5px',color:C.text,fontWeight:600,whiteSpace:'nowrap'}}>{f.label}</td>
+                              <td style={{padding:'11px 14px',fontSize:'12px',color:C.muted}}>{f.total} <span style={{color:C.muted2}}>({f.greens}G/{f.total - f.greens}R)</span></td>
+                              <td style={{padding:'11px 14px',fontSize:'13px',fontWeight:700,color: f.winRate == null ? C.muted2 : f.winRate >= 70 ? C.green : f.winRate >= 50 ? C.text : C.red}}>
+                                {f.winRate == null ? '— sem amostra' : `${f.winRate.toFixed(0)}%`}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
 
                   {encerrados.length > 1 && (
