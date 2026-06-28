@@ -263,10 +263,14 @@ export default function App() {
     } catch {} finally { setLoadingSignals(false); }
   }, []);
 
-  const loadJogosDoDia = useCallback(async () => {
+  // dataAlvo opcional, formato YYYY-MM-DD. Sem isso, o backend assume HOJE
+  // (fuso America/Sao_Paulo) — é assim que o botão "Hoje" funciona, sem
+  // precisar a gente calcular a data de hoje duas vezes (cliente e servidor).
+  const loadJogosDoDia = useCallback(async (dataAlvo) => {
     setLoadingJogos(true); setJogosError(null);
     try {
-      const { res, sessionExpired } = await authFetch('/api/jogos-do-dia');
+      const qs = dataAlvo ? `?data=${dataAlvo}` : '';
+      const { res, sessionExpired } = await authFetch(`/api/jogos-do-dia${qs}`);
       if (sessionExpired) { goToLoginExpired(); return; }
       const data = await res.json();
       if (!res.ok) { setJogosError(data?.error || 'Não foi possível carregar os jogos do dia.'); return; }
@@ -275,6 +279,60 @@ export default function App() {
     } catch { setJogosError('Erro de conexão ao buscar os jogos do dia.'); }
     finally { setLoadingJogos(false); }
   }, []);
+
+  // Desloca uma data YYYY-MM-DD em N dias (positivo = futuro, negativo =
+  // passado). Math em UTC puro pra não sofrer de virada de dia por fuso
+  // horário do navegador — a string YYYY-MM-DD já é a "verdade", não precisa
+  // reinterpretar em horário local.
+  function deslocarData(dataISO, dias) {
+    const [y, m, d] = dataISO.split('-').map(Number);
+    const dt = new Date(Date.UTC(y, m - 1, d));
+    dt.setUTCDate(dt.getUTCDate() + dias);
+    return dt.toISOString().slice(0, 10);
+  }
+
+  function irParaDia(dias) {
+    // Base: a data que já está na tela (dataJogos) — se ainda não carregou
+    // nenhuma vez, usa hoje em America/Sao_Paulo como ponto de partida, igual
+    // ao default do backend.
+    const base = dataJogos || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    const destino = deslocarData(base, dias);
+    const hoje = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    // Reforço dos limites aqui dentro (não só no `disabled` dos botões) —
+    // assim nenhuma chamada de navegação fora da janela permitida acontece
+    // mesmo que o botão seja acionado fora do estado esperado.
+    if (dias > 0) {
+      const maxData = deslocarData(hoje, 2);
+      if (destino > maxData) return;
+    } else if (dias < 0) {
+      const minData = deslocarData(hoje, -7);
+      if (destino < minData) return;
+    }
+    loadJogosDoDia(destino);
+  }
+
+  function irParaHoje() {
+    loadJogosDoDia();
+  }
+
+  // Trava a navegação em até 2 dias no futuro a partir de HOJE (não a partir
+  // do dia que está na tela) — sem isso, ficar clicando ▶ repetido foge cada
+  // vez mais de "hoje" sem limite, gastando chamada de API-Football pra
+  // datas cada vez mais distantes que ninguém costuma analisar de verdade.
+  function limiteFuturoAtingido() {
+    if (!dataJogos) return false;
+    const hoje = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    const maxData = deslocarData(hoje, 2);
+    return dataJogos >= maxData;
+  }
+
+  // Mesma lógica pro passado — 7 dias antes de hoje.
+  function limitePassadoAtingido() {
+    if (!dataJogos) return false;
+    const hoje = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    const minData = deslocarData(hoje, -7);
+    return dataJogos <= minData;
+  }
 
   // Clique num jogo da grade já leva pra Análises com o confronto preenchido.
   function analisarJogoDaGrade(timeA, timeB) {
@@ -816,10 +874,24 @@ export default function App() {
                     {jogosDoDia.length > 0 && ` · ${jogosDoDia.length} jogos`}
                   </div>
                 </div>
-                <button onClick={loadJogosDoDia} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',color:C.muted,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:'6px'}}>
-                  <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.49-8.18"/></svg>
-                  Atualizar
-                </button>
+                <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
+                  <button onClick={() => irParaDia(-1)} disabled={loadingJogos || limitePassadoAtingido()} title={limitePassadoAtingido() ? 'Limite de 7 dias no passado' : 'Dia anterior'}
+                    style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'8px',width:'34px',height:'34px',display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,cursor:(loadingJogos||limitePassadoAtingido())?'default':'pointer',opacity:(loadingJogos||limitePassadoAtingido()) ? .5 : 1}}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
+                  </button>
+                  <button onClick={irParaHoje} disabled={loadingJogos} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',color:C.muted,cursor:loadingJogos?'default':'pointer',fontFamily:'inherit',opacity:loadingJogos ? .5 : 1}}>
+                    Hoje
+                  </button>
+                  <button onClick={() => irParaDia(1)} disabled={loadingJogos || limiteFuturoAtingido()} title={limiteFuturoAtingido() ? 'Limite de 2 dias no futuro' : 'Dia seguinte'}
+                    style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'8px',width:'34px',height:'34px',display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,cursor:(loadingJogos||limiteFuturoAtingido())?'default':'pointer',opacity:(loadingJogos||limiteFuturoAtingido()) ? .5 : 1}}>
+                    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 18 15 12 9 6"/></svg>
+                  </button>
+                  <button onClick={() => loadJogosDoDia(dataJogos || undefined)} disabled={loadingJogos} title="Recarregar este dia"
+                    style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',color:C.muted,cursor:loadingJogos?'default':'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:'6px',opacity:loadingJogos ? .5 : 1}}>
+                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.49-8.18"/></svg>
+                    Atualizar
+                  </button>
+                </div>
               </div>
 
               {loadingJogos ? (
