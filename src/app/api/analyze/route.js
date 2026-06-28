@@ -5,6 +5,7 @@ export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
 import { NextResponse } from 'next/server';
 import { getSession } from '@/lib/auth';
+import { getSupabaseAdmin } from '@/lib/supabase';
 import { getCached, setCached } from '@/lib/cache';
 import { fetchComRetry } from '@/lib/fetchUtil';
 import { getFootballData, logErro } from '@/lib/footballData';
@@ -218,6 +219,27 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   }
 }
 
+// Loga toda análise real (não-demo, sem erro) numa tabela própria,
+// independente do usuário ter pegado, passado, ou nem decidido nada ainda —
+// é o dado que falta pra calibrar o sistema com o universo completo de
+// sinais, não só com os que foram escolhidos pra apostar.
+async function registrarHistoricoAnalise(userId, jogo, mercado, result, min) {
+  const db = getSupabaseAdmin();
+  const { error } = await db.from('analises_historico').insert({
+    user_id: userId,
+    evento: result.evento || jogo,
+    competicao: result.competicao || null,
+    mercado,
+    score: result.score,
+    min_score: min,
+    aprovado: !!result.aprovado,
+    criterios_ok: result.criterios_atendidos || [],
+    criterios_no: result.criterios_nao_atendidos || [],
+    alertas: result.alertas || [],
+  });
+  if (error) throw error;
+}
+
 function demoResult(jogo, mercado, motivo) {
   const min = MERCADOS[mercado]?.min || 82;
   const score = min + Math.floor(Math.random() * 15);
@@ -346,6 +368,15 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
     if (dadosReais.disponivel) {
       aplicarEnforcementDeterministico(mercado, dadosReais, result, min);
     }
+
+    // Log automático de TODA análise real (aprovada ou reprovada) — é o que
+    // permite, mais pra frente, saber se sinal REJEITADO também teria batido,
+    // em vez de só medir o que o usuário escolheu apostar. Roda em paralelo
+    // sem travar a resposta: se o insert falhar, a análise ainda volta
+    // normal pro usuário — perder esse log não pode quebrar a feature
+    // principal.
+    registrarHistoricoAnalise(session.userId, jogo, mercado, result, min)
+      .catch(e => logErro('analises_historico_insert', { jogo, mercado }, e));
 
     // Só cacheia análise real (nunca modo demo, nunca erro).
     await salvarCache(jogo, mercado, result);
