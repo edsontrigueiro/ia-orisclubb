@@ -52,6 +52,13 @@ function normalizarPais(p) {
   return PAISES_PT_EN[limpo] || limpo;
 }
 
+// Retorna { id, exato } em vez de só o id. "exato" indica se achamos um nome
+// IGUAL (ou igual + país confirmado) ao texto que o usuário digitou. Quando
+// "exato" é false, o código caiu pro primeiro resultado de busca por
+// relevância da API — pode ser o time certo, mas pode ser um homônimo de
+// outro país/divisão. Isso importa porque, se o time for o errado, TODOS os
+// dados da análise (forma, H2H, odds) ficam errados de forma silenciosa e
+// confiante — sem esse flag, nada no sistema detecta isso.
 async function buscarIdTime(nome, headers, paisHint = null) {
   try {
     const res = await fetchComRetry(
@@ -77,10 +84,11 @@ async function buscarIdTime(nome, headers, paisHint = null) {
     if (paisHint && exatos.length > 1) {
       const paisNorm = normalizarPais(paisHint);
       const comPais = exatos.find(c => normalizarPais(c.team?.country) === paisNorm);
-      if (comPais) return comPais.team.id;
+      if (comPais) return { id: comPais.team.id, exato: true };
     }
 
-    return (exatos[0] || candidatos[0])?.team?.id || null;
+    if (exatos.length > 0) return { id: exatos[0].team.id, exato: true };
+    return candidatos[0]?.team?.id ? { id: candidatos[0].team.id, exato: false } : null;
   } catch (e) {
     logErro('buscarIdTime', { nome, paisHint }, e);
     return null;
@@ -134,7 +142,7 @@ async function buscarHeadToHead(idA, idB, headers) {
 // sem buscar jogo a jogo. Mais caro (1 chamada extra por partida), mas é o
 // único jeito de ter dado real em vez de estimativa — usado só quando
 // explicitamente pedido (mercado de escanteios, ou o preview de estatísticas).
-async function buscarEscanteiosJogo(fixtureId, headers) {
+export async function buscarEscanteiosJogo(fixtureId, headers) {
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures/statistics?fixture=${fixtureId}`,
@@ -187,6 +195,7 @@ async function buscarFixtureFuturo(idA, idB, headers) {
     if (!f) return null;
     return {
       id: f.fixture?.id || null,
+      data: f.fixture?.date || null,
       ligaNome: f.league?.name || null,
       round: f.league?.round || null,
     };
@@ -222,7 +231,7 @@ const ODDS_MAPA = {
   'Under 3.5 Gols': { bet: 'Goals Over/Under', value: 'Under 3.5' },
   'Dupla Chance':   { bet: 'Double Chance', value: null }, // valor varia conforme quem é o favorito, tratado abaixo
   // Lay Empate = apostar CONTRA o empate = exatamente o valor "Home/Away"
-  // do mercado Double Chance (casas de aposta já vendem isso pronto).
+  // do mercado Double Chance (casas de apostas já vendem isso pronto).
   'Lay Empate':      { bet: 'Double Chance', value: 'Home/Away' },
   'BTTS Não':        { bet: 'Both Teams Score', value: 'No' },
   '+0.5 Gols 1T':    { bet: 'Goals Over/Under First Half', value: 'Over 0.5' },
@@ -285,351 +294,4 @@ async function buscarOddsReais(fixtureId, mercado, headers) {
     logErro('buscarOddsReais', { fixtureId, mercado }, e);
     return null;
   }
-}
-
-// Agrega uma lista de jogos (já filtrada) na perspectiva de um time
-// específico — usado pra forma geral, só em casa, só fora, e últimos 5.
-function agregarJogos(jogos, teamId) {
-  let vitorias = 0, empates = 0, derrotas = 0;
-  let golsMarcados = 0, golsSofridos = 0;
-  let semSofrer = 0, semMarcar = 0, validos = 0;
-  // 1º tempo: a API já manda o placar do intervalo em "score.halftime" de
-  // cada jogo — só nunca tínhamos extraído. Sem isso, mercados como "-2.5
-  // Gols 1T" não tinham nenhum dado real de 1º tempo pra se basear.
-  let golsMarcados1T = 0, golsSofridos1T = 0, validos1T = 0, jogos1TBaixo = 0, jogos1TSemGols = 0;
-
-  for (const f of jogos) {
-    const homeId = f.teams?.home?.id, awayId = f.teams?.away?.id;
-    // Se nenhum dos dois lados bate com o time que estamos agregando, o
-    // registro está malformado/incompleto — pular em vez de assumir "fora"
-    // por padrão e atribuir um placar que pode nem ser desse time.
-    if (homeId !== teamId && awayId !== teamId) continue;
-    const ehCasa = homeId === teamId;
-    const golsPro = ehCasa ? f.goals?.home : f.goals?.away;
-    const golsContra = ehCasa ? f.goals?.away : f.goals?.home;
-    if (golsPro == null || golsContra == null) continue;
-    validos++;
-    golsMarcados += golsPro;
-    golsSofridos += golsContra;
-    if (golsContra === 0) semSofrer++;
-    if (golsPro === 0) semMarcar++;
-    if (golsPro > golsContra) vitorias++;
-    else if (golsPro === golsContra) empates++;
-    else derrotas++;
-
-    const ht = f.score?.halftime;
-    const golsPro1T = ehCasa ? ht?.home : ht?.away;
-    const golsContra1T = ehCasa ? ht?.away : ht?.home;
-    if (golsPro1T != null && golsContra1T != null) {
-      validos1T++;
-      golsMarcados1T += golsPro1T;
-      golsSofridos1T += golsContra1T;
-      if (golsPro1T + golsContra1T <= 2) jogos1TBaixo++;
-      if (golsPro1T + golsContra1T === 0) jogos1TSemGols++;
-    }
-  }
-  if (validos === 0) return null;
-
-  return {
-    jogos_considerados: validos,
-    vitorias, empates, derrotas,
-    media_gols_marcados: +(golsMarcados / validos).toFixed(2),
-    media_gols_sofridos: +(golsSofridos / validos).toFixed(2),
-    jogos_sem_sofrer_gol: semSofrer,
-    jogos_sem_marcar_gol: semMarcar,
-    // Específico pro mercado de gols no 1º tempo — null se a API não trouxe
-    // o placar do intervalo pra nenhum desses jogos (raro, mas acontece em
-    // ligas menores).
-    primeiro_tempo: validos1T === 0 ? null : {
-      jogos_considerados: validos1T,
-      media_gols_marcados_1t: +(golsMarcados1T / validos1T).toFixed(2),
-      media_gols_sofridos_1t: +(golsSofridos1T / validos1T).toFixed(2),
-      // % dos jogos desse time em que o total de gols no 1T (dos dois lados)
-      // foi <= 2 — é literalmente a pergunta que o mercado "-2.5 Gols 1T" faz.
-      pct_jogos_1t_total_baixo: +((jogos1TBaixo / validos1T) * 100).toFixed(0),
-      // % dos jogos em que o 1T terminou 0x0 — o inverso é exatamente a
-      // pergunta do mercado "+0.5 Gols 1T" (pelo menos 1 gol no intervalo).
-      pct_jogos_1t_sem_gols: +((jogos1TSemGols / validos1T) * 100).toFixed(0),
-    },
-  };
-}
-
-// Estatísticas via /teams/statistics ficam PRESAS à liga+temporada do
-// próximo jogo. Em torneios recém-iniciados (ex: fase de grupos de Copa do
-// Mundo), isso reduz a amostra a 1-2 jogos mesmo que o time tenha dezenas de
-// partidas recentes em eliminatórias/amistosos. Esta função busca os últimos
-// jogos do time SEM esse travamento de competição, pra servir de base mais
-// robusta quando a amostra "presa" à competição atual for pequena.
-async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios = false) {
-  try {
-    const res = await fetchComRetry(
-      `https://v3.football.api-sports.io/fixtures?team=${teamId}&last=${qtd}`,
-      { headers }
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    const jogos = (data?.response || [])
-      .filter(f => f.fixture?.status?.short === 'FT')
-      // Mais recente primeiro — garante que "últimos 5" sejam de fato os 5
-      // mais recentes, independente da ordem que a API devolveu.
-      .sort((a, b) => new Date(b.fixture?.date) - new Date(a.fixture?.date));
-    if (jogos.length === 0) return null;
-
-    const mandante = jogos.filter(f => f.teams?.home?.id === teamId);
-    const visitante = jogos.filter(f => f.teams?.away?.id === teamId);
-
-    return {
-      // Geral: todos os jogos buscados, casa+fora misturados.
-      ...agregarJogos(jogos, teamId),
-      // Só em casa / só fora — efeito de mando de campo é real e relevante.
-      como_mandante: agregarJogos(mandante, teamId),
-      como_visitante: agregarJogos(visitante, teamId),
-      // Últimos 5 (subconjunto dos mesmos jogos, já ordenados do mais
-      // recente) — serve pra detectar mudança de momento vs. os últimos 10.
-      ultimos_5: agregarJogos(jogos.slice(0, 5), teamId),
-      // Escanteio só é buscado (1 chamada extra por partida) quando
-      // explicitamente pedido — caro pra valer a pena quando ninguém vai usar.
-      escanteios: incluirEscanteios ? await mediaEscanteios(jogos, headers) : null,
-      // Lista crua dos últimos jogos (placar, data, mando) — fica disponível
-      // pra quem quiser (preview de estatísticas), mas o analyze/route.js
-      // remove esse campo antes de montar o prompt da IA, pra não inflar o
-      // tamanho da chamada em toda análise só por causa de um recurso que
-      // só a grade do dia usa.
-      _jogos_recentes_brutos: jogos.slice(0, 10).map(f => ({
-        data: f.fixture?.date,
-        casa: f.teams?.home?.name,
-        fora: f.teams?.away?.name,
-        placar: `${f.goals?.home ?? '?'}-${f.goals?.away ?? '?'}`,
-        eh_casa: f.teams?.home?.id === teamId,
-      })),
-    };
-  } catch (e) {
-    logErro('buscarFormaRecente', { teamId }, e);
-    return null;
-  }
-}
-
-// /teams/statistics também devolve gols agrupados por faixa de minuto
-// ("0-15", "16-30", "31-45", etc.) — uma visão de TEMPORADA INTEIRA de quando
-// os gols desse time costumam sair, com amostra bem maior que os ~10 jogos
-// usados pra calcular "primeiro_tempo" em forma_recente (que é derivado
-// jogo a jogo do placar do intervalo). Usa os totais (não o "percentage" que
-// a API já manda como string formatada) pra não depender de parsing de texto.
-function pctGolsAteOIntervalo(porMinuto) {
-  if (!porMinuto) return null;
-  const faixas1T = ['0-15', '16-30', '31-45'];
-  let total1T = 0, totalGeral = 0;
-  for (const faixa of Object.keys(porMinuto)) {
-    const t = porMinuto[faixa]?.total;
-    if (t == null) continue;
-    totalGeral += t;
-    if (faixas1T.includes(faixa)) total1T += t;
-  }
-  if (totalGeral === 0) return null;
-  return +((total1T / totalGeral) * 100).toFixed(0);
-}
-
-async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
-  if (!leagueId || !season) return null;
-  try {
-    const res = await fetchComRetry(
-      `https://v3.football.api-sports.io/teams/statistics?team=${teamId}&league=${leagueId}&season=${season}`,
-      { headers }
-    );
-    if (!res.ok) return null;
-    const data = await res.json();
-    const s = data?.response;
-    if (!s || !s.fixtures) return null;
-    return {
-      jogos_disputados: s.fixtures?.played?.total ?? null,
-      vitorias: s.fixtures?.wins?.total ?? null,
-      empates: s.fixtures?.draws?.total ?? null,
-      derrotas: s.fixtures?.loses?.total ?? null,
-      media_gols_marcados: s.goals?.for?.average?.total ?? null,
-      media_gols_sofridos: s.goals?.against?.average?.total ?? null,
-      jogos_sem_sofrer_gol: s.clean_sheet?.total ?? null,
-      jogos_sem_marcar_gol: s.failed_to_score?.total ?? null,
-      // % dos gols da TEMPORADA (marcados/sofridos) que saíram até os 45min
-      // — sinal de "começa rápido"/"começa devagar" com amostra de temporada
-      // inteira, não só os últimos 10 jogos. Null se a API não trouxer esse
-      // detalhamento pra essa liga/temporada (cobertura varia por competição).
-      pct_gols_marcados_1t_temporada: pctGolsAteOIntervalo(s.goals?.for?.minute),
-      pct_gols_sofridos_1t_temporada: pctGolsAteOIntervalo(s.goals?.against?.minute),
-      // A própria resposta de /teams/statistics já vem com o recorte casa/fora
-      // pra esses campos — não custa nenhuma chamada extra, só não estávamos
-      // lendo. É uma segunda fonte de mando de campo (presa à temporada
-      // atual), complementar ao "como_mandante/como_visitante" calculado a
-      // partir dos jogos individuais em "forma_recente_time_a/b".
-      como_mandante: s.fixtures?.played?.home != null ? {
-        jogos_disputados: s.fixtures?.played?.home ?? null,
-        vitorias: s.fixtures?.wins?.home ?? null,
-        empates: s.fixtures?.draws?.home ?? null,
-        derrotas: s.fixtures?.loses?.home ?? null,
-        media_gols_marcados: s.goals?.for?.average?.home ?? null,
-        media_gols_sofridos: s.goals?.against?.average?.home ?? null,
-        jogos_sem_sofrer_gol: s.clean_sheet?.home ?? null,
-        jogos_sem_marcar_gol: s.failed_to_score?.home ?? null,
-      } : null,
-      como_visitante: s.fixtures?.played?.away != null ? {
-        jogos_disputados: s.fixtures?.played?.away ?? null,
-        vitorias: s.fixtures?.wins?.away ?? null,
-        empates: s.fixtures?.draws?.away ?? null,
-        derrotas: s.fixtures?.loses?.away ?? null,
-        media_gols_marcados: s.goals?.for?.average?.away ?? null,
-        media_gols_sofridos: s.goals?.against?.average?.away ?? null,
-        jogos_sem_sofrer_gol: s.clean_sheet?.away ?? null,
-        jogos_sem_marcar_gol: s.failed_to_score?.away ?? null,
-      } : null,
-    };
-  } catch (e) {
-    logErro('buscarEstatisticasTime', { teamId, leagueId, season }, e);
-    return null;
-  }
-}
-
-// Monta um pacote de dados reais sobre o confronto. Retorna sempre um objeto
-// explícito indicando o que foi possível obter, para o prompt nunca tratar
-// dado ausente como dado real.
-//
-// opts.mercado: usado pela análise da IA (define critério de odds e, se
-//   igual a "+8.5 Escanteios", ativa busca de escanteio automaticamente).
-// opts.incluirEscanteios: força a busca de escanteio independente do
-//   mercado — usado pelo preview de estatísticas na grade do dia, que quer
-//   mostrar escanteio sempre, sem precisar fingir um mercado específico.
-export async function getFootballData(jogo, opts = {}) {
-  const { mercado = null, incluirEscanteios = null } = opts;
-  const key = process.env.FOOTBALL_API_KEY;
-  if (!key) {
-    return { disponivel: false, motivo: 'FOOTBALL_API_KEY não configurada.' };
-  }
-  const headers = { 'x-apisports-key': key };
-
-  const { timeA, timeB, paisA, paisB } = parseTimes(jogo);
-  if (!timeA || !timeB) {
-    return { disponivel: false, motivo: 'Não foi possível identificar os dois times no texto informado (use "Time A vs Time B").' };
-  }
-
-  const [idA, idB] = await Promise.all([
-    buscarIdTime(timeA, headers, paisA),
-    buscarIdTime(timeB, headers, paisB),
-  ]);
-
-  if (!idA || !idB) {
-    const faltando = !idA ? timeA : timeB;
-    return { disponivel: false, motivo: `Time "${faltando}" não encontrado na base da API-Football.` };
-  }
-
-  // Cada time tem sua própria liga/temporada — times de confederações ou
-  // campeonatos diferentes (comum em amistosos de seleções) não podem
-  // compartilhar o mesmo contexto de liga, ou a busca de estatísticas do
-  // outro time simplesmente não acha nada.
-  const [proximoJogoA, proximoJogoB] = await Promise.all([
-    buscarProximoJogo(idA, headers),
-    buscarProximoJogo(idB, headers),
-  ]);
-  const leagueIdA = proximoJogoA?.league?.id || null;
-  const seasonA = proximoJogoA?.league?.season || null;
-  const leagueIdB = proximoJogoB?.league?.id || null;
-  const seasonB = proximoJogoB?.league?.season || null;
-
-  // Escanteio é caro (1 chamada extra por partida) — só busca quando o
-  // mercado selecionado de fato precisa desse dado, OU quando explicitamente
-  // pedido via incluirEscanteios (preview de estatísticas).
-  const precisaEscanteios = incluirEscanteios ?? (mercado === '+8.5 Escanteios');
-
-  const [h2h, statsA, statsB, formaA, formaB, fixtureFuturo] = await Promise.all([
-    buscarHeadToHead(idA, idB, headers),
-    buscarEstatisticasTime(idA, leagueIdA, seasonA, headers),
-    buscarEstatisticasTime(idB, leagueIdB, seasonB, headers),
-    buscarFormaRecente(idA, headers, 10, precisaEscanteios),
-    buscarFormaRecente(idB, headers, 10, precisaEscanteios),
-    buscarFixtureFuturo(idA, idB, headers),
-  ]);
-
-  // Escanteios do H2H — média dos confrontos diretos específicos entre
-  // esses dois times, separada da forma recente geral de cada um.
-  const escanteiosH2H = precisaEscanteios && h2h?.length
-    ? await mediaEscanteios(h2h, headers)
-    : null;
-
-  const oddsReais = mercado && ODDS_MAPA[mercado]
-    ? await buscarOddsReais(fixtureFuturo?.id, mercado, headers)
-    : null;
-
-  // Prioriza a competição do confronto EXATO (achado via H2H) pra decidir
-  // se é modo copa; se não achou esse confronto específico (ex: chaveamento
-  // ainda não definido), usa o próximo jogo do time A como aproximação.
-  const modoCopa = fixtureFuturo
-    ? ehCompeticaoDeCopa(fixtureFuturo.round, fixtureFuturo.ligaNome)
-    : ehCompeticaoDeCopa(proximoJogoA?.league?.round, proximoJogoA?.league?.name);
-
-  const h2hResumido = (h2h || [])
-    .slice(0, 10)
-    .sort((a, b) => new Date(b.fixture?.date) - new Date(a.fixture?.date))
-    .map(f => ({
-      data: f.fixture?.date,
-      // Calculado aqui no servidor, não deixado pra IA inferir da data —
-      // tirar a IA de fazer aritmética de datas evita erro bobo e deixa a
-      // instrução de "pesar o mais recente" objetiva e verificável.
-      dias_atras: f.fixture?.date ? Math.round((Date.now() - new Date(f.fixture.date).getTime()) / 86400000) : null,
-      casa: f.teams?.home?.name,
-      fora: f.teams?.away?.name,
-      placar: `${f.goals?.home ?? '?'}-${f.goals?.away ?? '?'}`,
-      placar_1t: f.score?.halftime?.home != null
-        ? `${f.score.halftime.home}-${f.score.halftime.away}`
-        : null,
-      // Indica se nesse confronto passado o mando de campo foi o mesmo do
-      // jogo analisado agora (time A em casa) — confronto direto com o mesmo
-      // mando vale mais como sinal do que um com os lados invertidos.
-      mesmo_mando_atual: f.teams?.home?.id === idA,
-    }));
-
-  // A lista crua de jogos recentes é útil pro preview de estatísticas, mas
-  // não precisa ir pro prompt da IA (ela já recebe os números agregados em
-  // "forma_recente_time_a/b") — extrai pro nível superior e tira do objeto
-  // que vira "DADOS" no prompt.
-  const jogosRecentesA = formaA?._jogos_recentes_brutos || null;
-  const jogosRecentesB = formaB?._jogos_recentes_brutos || null;
-  if (formaA) delete formaA._jogos_recentes_brutos;
-  if (formaB) delete formaB._jogos_recentes_brutos;
-
-  return {
-    disponivel: true,
-    time_a: timeA,
-    time_b: timeB,
-    liga_time_a: proximoJogoA?.league?.name || null,
-    liga_time_b: proximoJogoB?.league?.name || null,
-    temporada_time_a: seasonA,
-    temporada_time_b: seasonB,
-    // true = competição de copa/mata-mata (Copa do Mundo, Libertadores,
-    // Champions, Copa do Brasil etc.) — nessas, H2H raro/ausente e amostra
-    // pequena NA competição atual são NORMAIS, não falha de dado. Ver
-    // regra correspondente no prompt.
-    modo_copa: modoCopa,
-    confrontos_diretos: h2hResumido.length ? h2hResumido : null,
-    confrontos_diretos_indisponivel: h2hResumido.length === 0,
-    // Estatísticas presas à competição/temporada do próximo jogo — útil
-    // quando o time já tem amostra grande NESSA competição específica.
-    estatisticas_time_a: statsA,
-    estatisticas_time_b: statsB,
-    estatisticas_indisponiveis: !statsA && !statsB,
-    // Forma recente — últimos jogos do time em QUALQUER competição. Use como
-    // base principal quando "estatisticas_time_a/b" tiver amostra pequena
-    // (ex: torneio recém-iniciado), pois reflete o nível atual do time com
-    // muito mais jogos de apoio.
-    forma_recente_time_a: formaA,
-    forma_recente_time_b: formaB,
-    forma_recente_indisponivel: !formaA && !formaB,
-    // Odd real de mercado (se o plano da API-Football cobrir /odds e o
-    // mercado tiver mapeamento — ver ODDS_MAPA). Quando ausente, é só falta
-    // de cobertura/dados, não falha — a IA segue estimando como antes.
-    odds_mercado_real: oddsReais,
-    // Média de escanteios nos confrontos diretos específicos (só calculado
-    // quando incluirEscanteios/mercado de escanteios — null nos demais casos).
-    escanteios_h2h: escanteiosH2H,
-    // Lista crua de jogos recentes — só pro preview de estatísticas, fora do
-    // que normalmente vira prompt (analyze/route.js ignora esses 2 campos).
-    jogos_recentes_time_a: jogosRecentesA,
-    jogos_recentes_time_b: jogosRecentesB,
-  };
 }
