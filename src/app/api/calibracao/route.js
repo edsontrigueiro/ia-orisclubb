@@ -24,7 +24,7 @@ export async function GET(request) {
 
   const db = getSupabaseAdmin();
   const { data, error } = await db.from('analises_historico')
-    .select('mercado, score, aprovado, resultado, competicao, resolvido_automaticamente')
+    .select('mercado, score, aprovado, resultado, competicao, resolvido_automaticamente, sinais_fracos_count, match_exato_a, match_exato_b')
     .eq('user_id', session.userId)
     .order('analisado_em', { ascending: false })
     .limit(5000);
@@ -57,7 +57,12 @@ export async function GET(request) {
     .map(c => ({ ...c, taxa_acerto: +((c.greens / c.total) * 100).toFixed(1) }))
     .sort((a, b) => a.mercado.localeCompare(b.mercado) || a.faixa_score.localeCompare(b.faixa_score));
 
-  // ── Por liga/competição (top 20 por volume) ─────────────────────────────
+  // ── Por liga/competição ──────────────────────────────────────────────────
+  // SEM corte fixo de top-20: corte por volume escondia exatamente as ligas
+  // de baixo volume individual mas alta concentração de red (Ykkönen,
+  // Superettan, Torneo A, Canadian Premier) que motivaram o Gate 2. Em vez
+  // de cortar por posição, marca min_amostra pra sinalizar ligas com poucos
+  // dados (taxa não confiável) sem escondê-las do relatório.
   const porLiga = {};
   for (const d of aprovadasResolvidas) {
     const liga = d.competicao || 'Desconhecida';
@@ -66,9 +71,32 @@ export async function GET(request) {
     if (d.resultado === 'green') porLiga[liga].greens++;
   }
   const calibracaoPorLiga = Object.values(porLiga)
+    .map(c => ({
+      ...c,
+      taxa_acerto: +((c.greens / c.total) * 100).toFixed(1),
+      amostra_pequena: c.total < 5,
+    }))
+    .sort((a, b) => a.taxa_acerto - b.taxa_acerto || b.total - a.total);
+
+  // ── Por sinais_fracos_count (Gate 2) ────────────────────────────────────
+  // Em análises APROVADAS, sinais_fracos_count só pode ser 0 ou 1 (>=2 é
+  // reprovado automaticamente pelo Gate 2). Se taxa_acerto de
+  // sinais_fracos=1 for visivelmente pior que sinais_fracos=0, é evidência
+  // de que o limiar do Gate 2 (>=2 pra reprovar) está frouxo demais e
+  // deveria reprovar com 1 sinal fraco já. Exclui registros antigos sem
+  // esse dado (sinais_fracos_count null), gravados antes dessa coluna
+  // existir — não dá pra calibrar o que não foi medido.
+  const comSinais = aprovadasResolvidas.filter(d => d.sinais_fracos_count !== null && d.sinais_fracos_count !== undefined);
+  const porSinaisFracos = {};
+  for (const d of comSinais) {
+    const k = d.sinais_fracos_count;
+    if (!porSinaisFracos[k]) porSinaisFracos[k] = { sinais_fracos_count: k, total: 0, greens: 0 };
+    porSinaisFracos[k].total++;
+    if (d.resultado === 'green') porSinaisFracos[k].greens++;
+  }
+  const calibracaoPorSinaisFracos = Object.values(porSinaisFracos)
     .map(c => ({ ...c, taxa_acerto: +((c.greens / c.total) * 100).toFixed(1) }))
-    .sort((a, b) => b.total - a.total)
-    .slice(0, 20);
+    .sort((a, b) => a.sinais_fracos_count - b.sinais_fracos_count);
 
   return NextResponse.json({
     total_analises: total,
@@ -81,5 +109,9 @@ export async function GET(request) {
       : null,
     calibracao_por_mercado_faixa: calibracaoPorMercado,
     calibracao_por_liga: calibracaoPorLiga,
+    calibracao_por_sinais_fracos: calibracaoPorSinaisFracos,
+    aviso_sinais_fracos: comSinais.length === 0
+      ? 'Nenhuma análise no histórico ainda tem sinais_fracos_count gravado (coluna nova) — essa quebra só populará daqui pra frente.'
+      : null,
   });
 }
