@@ -141,6 +141,28 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   const formaA = dadosReais.forma_recente_time_a;
   const formaB = dadosReais.forma_recente_time_b;
 
+  // Sinais de qualidade de dado, calculados sempre (independente de qual
+  // gate decide aprovar/reprovar) e anexados no result pra serem logados em
+  // analises_historico via registrarHistoricoAnalise. Sem isso gravado, não
+  // dá pra calibrar depois se esses sinais de fato preveem red, nem
+  // verificar se o Gate 2 está prevenindo recorrência dos 4 reds que o
+  // motivaram (todos em ligas de baixa cobertura).
+  const oddAusenteFlag = dadosReais.odds_mercado_real == null;
+  const crossCheckTemporadaAusenteFlag = !!dadosReais.estatisticas_indisponiveis;
+  const h2hVazioFlag = !!dadosReais.confrontos_diretos_indisponivel;
+  const h2hSoAntigoFlag = !h2hVazioFlag && Array.isArray(dadosReais.confrontos_diretos) &&
+    dadosReais.confrontos_diretos.every(j => j.dias_atras == null || j.dias_atras > 730);
+  const h2hFracoFlag = h2hVazioFlag || h2hSoAntigoFlag;
+  const matchAproximadoFlag = dadosReais.match_exato_a === false || dadosReais.match_exato_b === false;
+  result._sinaisQualidade = {
+    match_exato_a: dadosReais.match_exato_a ?? null,
+    match_exato_b: dadosReais.match_exato_b ?? null,
+    odd_real_ausente: oddAusenteFlag,
+    crosscheck_temporada_ausente: crossCheckTemporadaAusenteFlag,
+    h2h_fraco: h2hFracoFlag,
+    sinais_fracos_count: [oddAusenteFlag, crossCheckTemporadaAusenteFlag, h2hFracoFlag, matchAproximadoFlag].filter(Boolean).length,
+  };
+
   // Gate 0 — se os DOIS times vieram de match aproximado (nenhum nome bateu
   // exato com a base da API), o risco não é só "dado fraco", é estarmos
   // potencialmente analisando o confronto errado por completo (homônimos).
@@ -185,15 +207,8 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // primeiro resultado de busca por relevância da API) — risco real de
   // estarmos olhando o time errado, o que torna TODOS os outros dados
   // (forma, H2H, odds) potencialmente inválidos, não só "fracos".
-  const oddAusente = dadosReais.odds_mercado_real == null;
-  const crossCheckTemporadaAusente = !!dadosReais.estatisticas_indisponiveis;
-  const h2hVazio = !!dadosReais.confrontos_diretos_indisponivel;
-  const h2hSoAntigo = !h2hVazio && Array.isArray(dadosReais.confrontos_diretos) &&
-    dadosReais.confrontos_diretos.every(j => j.dias_atras == null || j.dias_atras > 730);
-  const h2hFraco = h2hVazio || h2hSoAntigo;
+  const { odd_real_ausente: oddAusente, crosscheck_temporada_ausente: crossCheckTemporadaAusente, h2h_fraco: h2hFraco, sinais_fracos_count: sinaisFracos } = result._sinaisQualidade;
   const matchTimeAproximado = dadosReais.match_exato_a === false || dadosReais.match_exato_b === false;
-
-  const sinaisFracos = [oddAusente, crossCheckTemporadaAusente, h2hFraco, matchTimeAproximado].filter(Boolean).length;
   if (sinaisFracos >= 2) {
     result.aprovado = false;
     result.score = Math.min(result.score, min - 1);
@@ -265,6 +280,17 @@ async function registrarHistoricoAnalise(userId, jogo, mercado, result, min, dad
     // Só relevante pra "Dupla Chance" — ver Regra 13 do system prompt.
     // Sem isso, "Dupla Chance" nunca pode ser resolvida automaticamente.
     lado_aprovado: result.lado_aprovado || null,
+    // Sinais de qualidade de dado (Gate 0/Gate 2) — persistidos pra permitir
+    // calibrar depois se esses sinais de fato preveem red, e se o Gate 2
+    // está prevenindo a recorrência dos reds em ligas de baixa cobertura
+    // que motivaram sua criação. Ver result._sinaisQualidade em
+    // aplicarEnforcementDeterministico.
+    match_exato_a: result._sinaisQualidade?.match_exato_a ?? null,
+    match_exato_b: result._sinaisQualidade?.match_exato_b ?? null,
+    odd_real_ausente: result._sinaisQualidade?.odd_real_ausente ?? null,
+    crosscheck_temporada_ausente: result._sinaisQualidade?.crosscheck_temporada_ausente ?? null,
+    h2h_fraco: result._sinaisQualidade?.h2h_fraco ?? null,
+    sinais_fracos_count: result._sinaisQualidade?.sinais_fracos_count ?? null,
   });
   if (error) throw error;
 }
