@@ -12,6 +12,21 @@ function faixaScore(score) {
   return `${base}-${base + 4}`;
 }
 
+// Limite inferior do intervalo de Wilson (95% de confiança) — a taxa bruta
+// (greens/total) superestima sistematicamente a confiança em amostras
+// pequenas. Ex: 41/47 = 87.2% bruto, mas o limite inferior de Wilson fica em
+// ~74.8% — é essa segunda métrica que diz se dá pra confiar no número com
+// n pequeno, não a taxa bruta sozinha. z=1.96 pra 95% de confiança.
+function wilsonLowerBound(greens, total) {
+  if (total === 0) return null;
+  const z = 1.96;
+  const p = greens / total;
+  const denominador = 1 + (z * z) / total;
+  const centro = p + (z * z) / (2 * total);
+  const margem = z * Math.sqrt((p * (1 - p)) / total + (z * z) / (4 * total * total));
+  return +(((centro - margem) / denominador) * 100).toFixed(1);
+}
+
 // Relatório de calibração real: compara o "score" que o sistema deu com a
 // taxa de acerto de fato observada (campo "resultado", preenchido manual ou
 // automaticamente pelo cron). Sem isso, ninguém sabe se "score 88" de fato
@@ -54,7 +69,12 @@ export async function GET(request) {
     if (d.resultado === 'green') porMercadoFaixa[chave].greens++;
   }
   const calibracaoPorMercado = Object.values(porMercadoFaixa)
-    .map(c => ({ ...c, taxa_acerto: +((c.greens / c.total) * 100).toFixed(1) }))
+    .map(c => ({
+      ...c,
+      taxa_acerto: +((c.greens / c.total) * 100).toFixed(1),
+      wilson_lower_bound: wilsonLowerBound(c.greens, c.total),
+      amostra_insuficiente: c.total < 15, // mesmo piso do protocolo de calibração alinhado
+    }))
     .sort((a, b) => a.mercado.localeCompare(b.mercado) || a.faixa_score.localeCompare(b.faixa_score));
 
   // ── Por liga/competição ──────────────────────────────────────────────────
@@ -74,6 +94,7 @@ export async function GET(request) {
     .map(c => ({
       ...c,
       taxa_acerto: +((c.greens / c.total) * 100).toFixed(1),
+      wilson_lower_bound: wilsonLowerBound(c.greens, c.total),
       amostra_pequena: c.total < 5,
     }))
     .sort((a, b) => a.taxa_acerto - b.taxa_acerto || b.total - a.total);
@@ -95,8 +116,21 @@ export async function GET(request) {
     if (d.resultado === 'green') porSinaisFracos[k].greens++;
   }
   const calibracaoPorSinaisFracos = Object.values(porSinaisFracos)
-    .map(c => ({ ...c, taxa_acerto: +((c.greens / c.total) * 100).toFixed(1) }))
+    .map(c => ({
+      ...c,
+      taxa_acerto: +((c.greens / c.total) * 100).toFixed(1),
+      wilson_lower_bound: wilsonLowerBound(c.greens, c.total),
+    }))
     .sort((a, b) => a.sinais_fracos_count - b.sinais_fracos_count);
+
+  // Wilson lower bound do agregado geral (todos os mercados/ligas juntos) —
+  // é o número que responde "dá pra confiar que a taxa real está perto do
+  // que a taxa bruta mostra?" antes de qualquer decisão de ajustar
+  // threshold. Ex: 41/47 aprovados green é 87.2% bruto, mas o limite
+  // inferior de Wilson é o que diz se isso é estatisticamente distinguível
+  // do target de calibração (95%) ou só variância de amostra pequena.
+  const greensGeral = aprovadasResolvidas.filter(d => d.resultado === 'green').length;
+  const wilsonGeral = wilsonLowerBound(greensGeral, aprovadasResolvidas.length);
 
   return NextResponse.json({
     total_analises: total,
@@ -104,6 +138,10 @@ export async function GET(request) {
     cobertura_pct: cobertura,
     resolvidas_automaticamente: resolvidas.filter(d => d.resolvido_automaticamente).length,
     aprovadas_resolvidas: aprovadasResolvidas.length,
+    taxa_acerto_geral: aprovadasResolvidas.length
+      ? +((greensGeral / aprovadasResolvidas.length) * 100).toFixed(1)
+      : null,
+    wilson_lower_bound_geral: wilsonGeral,
     aviso: aprovadasResolvidas.length < 30
       ? 'Amostra ainda pequena (< 30 sinais aprovados com resultado conhecido) — taxas abaixo são indicativas, não conclusivas.'
       : null,
