@@ -264,6 +264,18 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // de modo_copa: em modo_copa a própria Regra 11 já manda ignorar o recorte
   // de mando (sede neutra) e usar a forma geral combinada — não faz sentido
   // aplicar piso de amostra num recorte que a regra manda nem usar.
+  const DIVERGENCIA_MAXIMA_TAXA = 0.20; // 20 pontos percentuais
+
+  // Taxa de "jogos sem marcar" — usada como proxy geral de risco ofensivo do
+  // recorte, pra comparar se a amostra pequena de forma_recente e a amostra
+  // maior de estatisticas_time_a/b apontam na MESMA direção. Retorna null se
+  // não der pra calcular (bloco ausente ou sem jogos válidos).
+  function taxaSemMarcar(bloco, campoAmostra) {
+    const amostra = bloco?.[campoAmostra];
+    if (bloco == null || amostra == null || amostra === 0 || bloco.jogos_sem_marcar_gol == null) return null;
+    return bloco.jogos_sem_marcar_gol / amostra;
+  }
+
   if (!dadosReais.modo_copa) {
     const mandanteA = formaA?.como_mandante;
     const visitanteB = formaB?.como_visitante;
@@ -273,25 +285,47 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
     // Cross-check: estatisticas_time_a/b vêm de /teams/statistics (temporada
     // inteira presa à liga atual), com amostra tipicamente maior que os ~5
     // jogos de mando dentro de forma_recente (que busca só os últimos 10
-    // jogos em qualquer competição). Se essa segunda fonte também tiver
-    // amostra decente no recorte de mando, ela pode confirmar/contradizer o
-    // sinal fraco de forma_recente — mesmo princípio do Gate 3.
+    // jogos em qualquer competição). Não basta essa segunda fonte EXISTIR
+    // com amostra boa — ela precisa CONCORDAR em direção com o recorte
+    // pequeno, senão "confirmar" é só maquiagem: foi exatamente esse buraco
+    // que deixaria passar o caso Athletico PR se a API tivesse trazido
+    // stats de temporada do Bragantino como visitante também (o dado de
+    // temporada do Athletico como mandante, 10% sem marcar, CONTRADIZ os
+    // 40% da amostra recente de 5 jogos — divergência de 30pp, não uma
+    // confirmação).
     const statsMandanteA = dadosReais.estatisticas_time_a?.como_mandante;
     const statsVisitanteB = dadosReais.estatisticas_time_b?.como_visitante;
+    const amostraSeasonMandanteOk = (statsMandanteA?.jogos_disputados ?? 0) > AMOSTRA_MINIMA_RECORTE;
+    const amostraSeasonVisitanteOk = (statsVisitanteB?.jogos_disputados ?? 0) > AMOSTRA_MINIMA_RECORTE;
+
+    const taxaRecenteA = taxaSemMarcar(mandanteA, 'jogos_considerados');
+    const taxaSeasonA = taxaSemMarcar(statsMandanteA, 'jogos_disputados');
+    const taxaRecenteB = taxaSemMarcar(visitanteB, 'jogos_considerados');
+    const taxaSeasonB = taxaSemMarcar(statsVisitanteB, 'jogos_disputados');
+
+    const concordaA = taxaSeasonA != null && taxaRecenteA != null &&
+      Math.abs(taxaSeasonA - taxaRecenteA) <= DIVERGENCIA_MAXIMA_TAXA;
+    const concordaB = taxaSeasonB != null && taxaRecenteB != null &&
+      Math.abs(taxaSeasonB - taxaRecenteB) <= DIVERGENCIA_MAXIMA_TAXA;
+
     const temCrossCheckMando =
-      (statsMandanteA?.jogos_disputados ?? 0) > AMOSTRA_MINIMA_RECORTE &&
-      (statsVisitanteB?.jogos_disputados ?? 0) > AMOSTRA_MINIMA_RECORTE;
+      amostraSeasonMandanteOk && amostraSeasonVisitanteOk && concordaA && concordaB;
 
     const amostraMandoFragil =
       amostraMandanteA == null || amostraVisitanteB == null ||
       amostraMandanteA <= AMOSTRA_MINIMA_RECORTE || amostraVisitanteB <= AMOSTRA_MINIMA_RECORTE;
 
     if (amostraMandoFragil && !temCrossCheckMando) {
+      const divergenciaTexto = (taxaSeasonA != null && taxaRecenteA != null && !concordaA)
+        ? ` [divergência Time A: ${(taxaRecenteA * 100).toFixed(0)}% recente vs ${(taxaSeasonA * 100).toFixed(0)}% temporada]`
+        : (taxaSeasonB != null && taxaRecenteB != null && !concordaB)
+        ? ` [divergência Time B: ${(taxaRecenteB * 100).toFixed(0)}% recente vs ${(taxaSeasonB * 100).toFixed(0)}% temporada]`
+        : '';
       result.aprovado = false;
       result.score = Math.min(result.score, min - 1);
       result.alertas = [
         ...(result.alertas || []),
-        `[Enforcement automático] Recorte mando/visitante com amostra pequena (Time A como mandante: ${amostraMandanteA ?? 'sem dado'} jogos, Time B como visitante: ${amostraVisitanteB ?? 'sem dado'} jogos) e sem confirmação por dado de temporada inteira (/teams/statistics). Percentuais desse recorte não sustentam aprovação sozinhos. Aprovação da IA foi revertida pelo código — Gate 4.`,
+        `[Enforcement automático] Recorte mando/visitante com amostra pequena (Time A como mandante: ${amostraMandanteA ?? 'sem dado'} jogos, Time B como visitante: ${amostraVisitanteB ?? 'sem dado'} jogos) e sem confirmação confiável por dado de temporada inteira (/teams/statistics)${divergenciaTexto}. Percentuais desse recorte não sustentam aprovação sozinhos. Aprovação da IA foi revertida pelo código — Gate 4.`,
       ];
     }
   }
