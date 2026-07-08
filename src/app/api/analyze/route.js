@@ -249,6 +249,69 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
         ...(result.alertas || []),
         `[Enforcement automático] Dado de 1º tempo com amostra pequena ou ausente no recorte usado (Time A: ${amostra1tA ?? 'sem dado'} jogos, Time B: ${amostra1tB ?? 'sem dado'} jogos) e sem confirmação por dado de temporada inteira. Aprovação da IA foi revertida pelo código — Regra 12 (Gate 3).`,
       ];
+      return;
+    }
+  }
+
+  // Gate 4 — amostra do recorte mando/visitante (GERAL, não só 1º tempo).
+  // A Regra 8 do prompt manda priorizar "como_mandante" do Time A e
+  // "como_visitante" do Time B sobre a média geral, pra TODO mercado (não só
+  // os de 1T) — mas nada em código garantia amostra mínima nesse recorte
+  // específico. Foi exatamente essa lacuna que aprovou o sinal de "+1.5
+  // Gols" Athletico PR U20 x Bragantino U20: "40% sem marcar como mandante"
+  // vinha de uma amostra de 5 jogos, e o score tratou isso como sinal forte
+  // de risco sem desconto de confiança nenhum em código. Só se aplica fora
+  // de modo_copa: em modo_copa a própria Regra 11 já manda ignorar o recorte
+  // de mando (sede neutra) e usar a forma geral combinada — não faz sentido
+  // aplicar piso de amostra num recorte que a regra manda nem usar.
+  if (!dadosReais.modo_copa) {
+    const mandanteA = formaA?.como_mandante;
+    const visitanteB = formaB?.como_visitante;
+    const amostraMandanteA = mandanteA?.jogos_considerados ?? null;
+    const amostraVisitanteB = visitanteB?.jogos_considerados ?? null;
+
+    // Cross-check: estatisticas_time_a/b vêm de /teams/statistics (temporada
+    // inteira presa à liga atual), com amostra tipicamente maior que os ~5
+    // jogos de mando dentro de forma_recente (que busca só os últimos 10
+    // jogos em qualquer competição). Se essa segunda fonte também tiver
+    // amostra decente no recorte de mando, ela pode confirmar/contradizer o
+    // sinal fraco de forma_recente — mesmo princípio do Gate 3.
+    const statsMandanteA = dadosReais.estatisticas_time_a?.como_mandante;
+    const statsVisitanteB = dadosReais.estatisticas_time_b?.como_visitante;
+    const temCrossCheckMando =
+      (statsMandanteA?.jogos_disputados ?? 0) > AMOSTRA_MINIMA_RECORTE &&
+      (statsVisitanteB?.jogos_disputados ?? 0) > AMOSTRA_MINIMA_RECORTE;
+
+    const amostraMandoFragil =
+      amostraMandanteA == null || amostraVisitanteB == null ||
+      amostraMandanteA <= AMOSTRA_MINIMA_RECORTE || amostraVisitanteB <= AMOSTRA_MINIMA_RECORTE;
+
+    if (amostraMandoFragil && !temCrossCheckMando) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] Recorte mando/visitante com amostra pequena (Time A como mandante: ${amostraMandanteA ?? 'sem dado'} jogos, Time B como visitante: ${amostraVisitanteB ?? 'sem dado'} jogos) e sem confirmação por dado de temporada inteira (/teams/statistics). Percentuais desse recorte não sustentam aprovação sozinhos. Aprovação da IA foi revertida pelo código — Gate 4.`,
+      ];
+    }
+  }
+
+  // Gate 5 — amostra específica de escanteios, só pro mercado +8.5
+  // Escanteios. Cobertura de escanteio na API-Football é mais pobre que
+  // cobertura de gol (depende de endpoint separado por partida, ver
+  // mediaEscanteios), então o campo pode vir com poucos jogos válidos mesmo
+  // quando a amostra geral (Gate 1) está ok — o Gate 1 mede jogos_considerados
+  // de gols, não de escanteios especificamente.
+  if (mercado === '+8.5 Escanteios') {
+    const escA = formaA?.escanteios?.jogos_considerados ?? null;
+    const escB = formaB?.escanteios?.jogos_considerados ?? null;
+    if (escA == null || escB == null || escA <= AMOSTRA_MINIMA_RECORTE || escB <= AMOSTRA_MINIMA_RECORTE) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] Amostra de escanteios insuficiente (Time A: ${escA ?? 'sem dado'} jogos, Time B: ${escB ?? 'sem dado'} jogos com dado de escanteio disponível). Aprovação da IA foi revertida pelo código — Gate 5.`,
+      ];
     }
   }
 }
@@ -390,6 +453,13 @@ export async function POST(request) {
       body: JSON.stringify({
         model: 'claude-sonnet-4-6',
         max_tokens: 2000,
+        // temperature: 0 — análise de score/aprovação precisa ser
+        // determinística pro mesmo dado de entrada. Sem isso, o mesmo jogo
+        // com os mesmos dados podia gerar scores diferentes em execuções
+        // diferentes (ex: reanálise após cache expirar), o que quebra
+        // qualquer tentativa de calibração — você estaria medindo ruído do
+        // sampling da IA junto com o sinal real do critério.
+        temperature: 0,
         system: montarSystemPrompt(),
         messages: [{
           role: 'user',
