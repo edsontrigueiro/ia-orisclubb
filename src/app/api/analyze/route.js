@@ -41,6 +41,56 @@ const MERCADOS = {
   '+8.5 Escanteios':{ min: 85 },
 };
 
+// ── Contexto de calibração histórica ────────────────────────────────────
+// IMPORTANTE: isso NÃO é a IA "aprendendo" com resultados passados — cada
+// chamada à API da Anthropic continua stateless, sem memória entre
+// execuções. O que fazemos aqui é buscar, ANTES de cada análise, um resumo
+// estatístico real do desempenho desse mercado especificamente (via
+// analises_historico) e injetar como CONTEXTO no prompt. É uma aproximação
+// barata de retroalimentação — o modelo não muda, mas o dado que ele recebe
+// muda com base no histórico real. Só inclui se houver amostra mínima
+// (mesmo piso de 15 do protocolo de calibração já alinhado) — abaixo disso,
+// taxa bruta engana mais do que ajuda.
+const AMOSTRA_MINIMA_CONTEXTO_CALIBRACAO = 15;
+
+function wilsonLowerBound(greens, total) {
+  if (!total) return null;
+  const z = 1.96;
+  const p = greens / total;
+  const denominador = 1 + (z * z) / total;
+  const centro = p + (z * z) / (2 * total);
+  const margem = z * Math.sqrt((p * (1 - p)) / total + (z * z) / (4 * total * total));
+  return +(((centro - margem) / denominador) * 100).toFixed(1);
+}
+
+// Busca o histórico real (aprovadas + resolvidas) desse mercado específico
+// pra esse usuário. Roda em paralelo com getFootballData no POST — não é
+// bloqueante além do necessário. Falha silenciosa (retorna null) se a query
+// der erro: contexto de calibração é um "nice to have" pro prompt, nunca
+// deve derrubar a análise principal.
+async function buscarContextoCalibracao(userId, mercado) {
+  try {
+    const db = getSupabaseAdmin();
+    const { data, error } = await db.from('analises_historico')
+      .select('resultado')
+      .eq('user_id', userId)
+      .eq('mercado', mercado)
+      .eq('aprovado', true)
+      .in('resultado', ['green', 'red']);
+    if (error || !data || data.length < AMOSTRA_MINIMA_CONTEXTO_CALIBRACAO) return null;
+    const total = data.length;
+    const greens = data.filter(d => d.resultado === 'green').length;
+    return {
+      total,
+      taxa_acerto_bruta: +((greens / total) * 100).toFixed(1),
+      wilson_lower_bound: wilsonLowerBound(greens, total),
+    };
+  } catch (e) {
+    logErro('contexto_calibracao', { mercado }, e);
+    return null;
+  }
+}
+
 // Critérios estatísticos explícitos por mercado, injetados no prompt da IA
 // para os mercados de alta assertividade. Sem isso, a IA julga "no genérico"
 // e o score deixa de refletir os sinais que de fato tornam esses mercados
@@ -433,6 +483,7 @@ function montarSystemPrompt() {
     - Resumindo: em modo copa, julgue principalmente pela "forma_recente" geral de cada time e pelo "ultimos_5" — não reprove automaticamente só porque H2H e estatísticas do torneio estão vazios, isso é esperado nesse contexto.
 12. CUIDADO COM PERCENTUAL CALCULADO EM AMOSTRA PEQUENA: vários campos vêm como percentual (ex: "pct_jogos_1t_total_baixo", "pct_jogos_1t_sem_gols", taxas de "jogos_sem_marcar_gol"/"jogos_sem_sofrer_gol"). Esses percentuais SEMPRE vêm acompanhados de "jogos_considerados" (ou equivalente) — confira esse número antes de confiar no percentual. Um "100%" calculado em 4 ou 5 jogos NÃO tem a mesma força estatística que um "100%" calculado em 15-20 jogos, mesmo sendo o mesmo número — com amostra pequena, a taxa real pode estar bem mais baixa e você ainda não viu o jogo que quebra o padrão. Quando um percentual alto (>= 85%) que está sustentando a aprovação vier de uma amostra de 6 jogos ou menos (e especialmente de recortes como "como_mandante"/"como_visitante"/"ultimos_5", que são subconjuntos pequenos por natureza), aplique um desconto de confiança: ou exija confirmação de outra fonte (H2H, a métrica geral mais ampla) apontando na mesma direção, ou reduza o score abaixo do mínimo do mercado mesmo que o percentual isolado pareça forte. Isso não significa reprovar automaticamente toda amostra pequena — significa não tratar "100% em 4 jogos" com o mesmo peso de "100% em 15 jogos".
 13. Se o mercado for "Dupla Chance", você precisa identificar explicitamente qual lado está sendo aprovado e preencher o campo "lado_aprovado" com "1X" (Time A, o mandante, não perde — vence ou empata) ou "X2" (Time B, o visitante, não perde). Isso não é opcional: é o que permite, dias depois, checar o placar real e saber se a aprovação bateu ou não. Pra qualquer mercado que não seja "Dupla Chance", "lado_aprovado" deve ser sempre null.
+14. Se a mensagem do usuário incluir um bloco "CONTEXTO DE CALIBRAÇÃO HISTÓRICA", esse é o desempenho real e medido desse mercado especificamente (taxa de acerto de sinais aprovados e já resolvidos, com limite inferior de confiança estatística). Use isso SÓ como ajuste de confiança geral, nunca como critério de aprovação: se o limite inferior estiver bem abaixo do esperado pra esse mercado, seja mais conservador no score mesmo que os critérios individuais pareçam bons, e mencione isso no "insight". NUNCA use uma taxa histórica boa pra justificar aprovar um sinal que não atende aos critérios estatísticos do jogo atual — o histórico informa o quanto confiar no sistema como um todo, não substitui a análise do confronto específico. Se esse bloco não estiver presente, é porque ainda não há amostra suficiente desse mercado pra esse cálculo — não trate a ausência como sinal bom ou ruim.
 
 Responda SOMENTE com JSON válido, sem markdown, sem texto fora do JSON.`;
 }
@@ -462,7 +513,13 @@ export async function POST(request) {
     if (!apiKey) return NextResponse.json(demoResult(jogo, mercado));
 
     const min = MERCADOS[mercado].min;
-    const dadosReais = await getFootballData(jogo, { mercado });
+    // Em paralelo: dado real do jogo (API-Football) e contexto de
+    // calibração histórica desse mercado (Supabase) — são independentes,
+    // não faz sentido esperar um pro outro começar.
+    const [dadosReais, contextoCalibracao] = await Promise.all([
+      getFootballData(jogo, { mercado }),
+      buscarContextoCalibracao(session.userId, mercado),
+    ]);
 
     // jogos_recentes_time_a/b são só pro preview de estatísticas da grade do
     // dia — não fazem sentido no prompt da IA (ela já tem os números
@@ -472,6 +529,10 @@ export async function POST(request) {
     const blocoDados = dadosReais.disponivel
       ? `DADOS:\n${JSON.stringify(dadosParaPrompt)}`
       : `DADOS: indisponíveis. Motivo: ${dadosReais.motivo}`;
+
+    const blocoCalibracao = contextoCalibracao
+      ? `\n\nCONTEXTO DE CALIBRAÇÃO HISTÓRICA — mercado "${mercado}" (n=${contextoCalibracao.total} sinais aprovados e resolvidos): taxa de acerto bruta ${contextoCalibracao.taxa_acerto_bruta}%, limite inferior de confiança (Wilson 95%) ${contextoCalibracao.wilson_lower_bound}%. Ver Regra 14.`
+      : '';
 
     const blocoCriterios = CRITERIOS_MERCADO[mercado]
       ? `\n\n${CRITERIOS_MERCADO[mercado]}`
@@ -499,6 +560,7 @@ export async function POST(request) {
           role: 'user',
           content: `Analise "${jogo}" para o mercado "${mercado}". Score mínimo para aprovar: ${min}/100.
 ${blocoCriterios}
+${blocoCalibracao}
 
 ${blocoDados}
 
@@ -521,6 +583,7 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
     result._minScore = min;
     result._dadosReaisUsados = dadosReais.disponivel;
     result._oddsReais = dadosReais.odds_mercado_real || null;
+    result._contextoCalibracao = contextoCalibracao;
 
     // Reverte a aprovação na marra se o dado real não sustenta, mesmo que a
     // IA tenha aprovado — não depende mais só da IA "lembrar" da Regra 12.
