@@ -645,6 +645,14 @@ export async function getFootballData(jogo, opts = {}) {
     // a análise saindo "confiante" em cima de dado da entidade errada.
     match_exato_a: matchA.exato,
     match_exato_b: matchB.exato,
+    // IDs resolvidos dos dois times na base da API-Football — usado pelo
+    // Gate 6 (correlação de exposição, em analyze/route.js) pra comparar
+    // se dois sinais aprovados no mesmo dia são do MESMO confronto por ID,
+    // não por texto (nome digitado pode variar: "Flamengo" vs "Flamengo RJ"
+    // apontam pro mesmo id_time_a e não podem escapar da checagem por
+    // divergência de grafia).
+    id_time_a: idA,
+    id_time_b: idB,
     // Id e data do confronto exato (Time A x Time B) — usado pro cron de
     // resolução automática de resultado conseguir, dias depois, buscar o
     // placar final desse jogo específico e fechar o loop de calibração sem
