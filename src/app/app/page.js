@@ -2,7 +2,7 @@
 export const dynamic = 'force-dynamic';
 import { useState, useEffect, useCallback } from 'react';
 import { useRouter } from 'next/navigation';
-import { authFetch, getStoredToken, getStoredUser, clearSession } from '@/lib/clientSession';
+import { authFetch, getStoredUser, clearSession } from '@/lib/clientSession';
 import { C, FONT_DISPLAY, FONT_BODY, FONT_MONO } from '@/lib/theme';
 
 const MKTS = [
@@ -243,10 +243,20 @@ export default function App() {
   }, [authReady]);
 
   useEffect(() => {
-    const t = getStoredToken();
-    if (!t) { router.push('/login'); return; }
-    setUser(getStoredUser());
-    setAuthReady(true);
+    // Antes isso checava um token de localStorage (síncrono, mas mentiroso
+    // — não provava que a sessão era válida, só que existia alguma coisa
+    // salva). Agora o token vive só em cookie httpOnly, invisível pro JS,
+    // então a única forma real de saber se a sessão é válida é perguntar
+    // pro servidor. /api/auth/me já faz exatamente isso (usa getSession,
+    // que lê o cookie) e authFetch já cuida do retry com refresh se o
+    // access_token tiver expirado.
+    (async () => {
+      const { res, sessionExpired } = await authFetch('/api/auth/me');
+      if (sessionExpired || !res?.ok) { router.push('/login'); return; }
+      const data = await res.json();
+      setUser(data.user || getStoredUser());
+      setAuthReady(true);
+    })();
   }, [router]);
 
   useEffect(() => {
