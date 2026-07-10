@@ -24,7 +24,7 @@ export default function Cadastro() {
       });
       const data = await res.json();
       if (!res.ok) { setErr(data.error || 'Erro ao criar conta.'); return; }
-      if (data.token) {
+      if (data.sessaoCriada) {
         saveSession(data);
         router.push('/app');
       } else {
