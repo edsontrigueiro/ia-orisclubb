@@ -428,6 +428,54 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   }
 }
 
+// Gate 6 — correlação de exposição: mais de um sinal APROVADO no mesmo dia
+// (UTC) pro mesmo usuário, no mesmo confronto — comparado por ID de time
+// resolvido na API-Football, não por texto (evita falso-negativo por
+// variação de grafia: "Flamengo" e "Flamengo RJ" resolvem pro mesmo
+// id_time_a). NÃO-bloqueante por design: dois sinais aprovados no mesmo
+// jogo (ex: +0.5 Gols e Dupla Chance no mesmo confronto) podem ser
+// estatisticamente válidos cada um isoladamente — o problema não é a
+// validade do sinal, é que ambos dependem do MESMO evento acontecer do
+// jeito esperado, então o stake combinado nos dois não é duas apostas
+// independentes, é uma exposição só, maior do que parece. Por isso vira
+// alerta explícito no resultado, nunca reprovação automática — quem
+// decide o dimensionamento é você, isso só garante que você VEJA a
+// correlação antes de decidir.
+//
+// Limitações conhecidas, aceitas de propósito (mesmo padrão de disclosure
+// já usado nos outros gates):
+// - Corte por dia UTC, não BRT — pode partir uma mesma sessão de apostas
+//   (à noite, horário de Brasília) em duas datas UTC diferentes. Se isso
+//   incomodar na prática, é uma troca de 1 linha (comparar em horário de
+//   Brasília em vez de UTC), mas não fiz por padrão pra não inventar
+//   requisito que você não pediu.
+// - Não é atômico: duas análises quase simultâneas do mesmo confronto
+//   podem não se enxergarem (ambas leem antes de qualquer insert
+//   terminar). Mitigado — roda o mais tarde possível, em paralelo com a
+//   chamada à IA, não no início da requisição — mas não eliminado.
+async function verificarExposicaoCorrelacionada(userId, idTimeA, idTimeB) {
+  if (idTimeA == null || idTimeB == null) return null; // sem ID resolvido, não dá pra comparar com segurança
+  try {
+    const db = getSupabaseAdmin();
+    const hojeUTC = new Date().toISOString().slice(0, 10);
+    const { data, error } = await db.from('analises_historico')
+      .select('mercado, id_time_a, id_time_b')
+      .eq('user_id', userId)
+      .eq('aprovado', true)
+      .gte('analisado_em', `${hojeUTC}T00:00:00.000Z`)
+      .lt('analisado_em', `${hojeUTC}T23:59:59.999Z`);
+    if (error || !data) return null;
+    const mesmoConfronto = data.filter(d =>
+      (d.id_time_a === idTimeA && d.id_time_b === idTimeB) ||
+      (d.id_time_a === idTimeB && d.id_time_b === idTimeA)
+    );
+    return mesmoConfronto.length > 0 ? mesmoConfronto.map(d => d.mercado) : null;
+  } catch (e) {
+    logErro('exposicao_correlacionada', { idTimeA, idTimeB }, e);
+    return null;
+  }
+}
+
 // Loga toda análise real (não-demo, sem erro) numa tabela própria,
 // independente do usuário ter pegado, passado, ou nem decidido nada ainda —
 // é o dado que falta pra calibrar o sistema com o universo completo de
@@ -452,6 +500,10 @@ async function registrarHistoricoAnalise(userId, jogo, mercado, result, min, dad
     data_jogo: dadosReais?.data_jogo || null,
     time_a: dadosReais?.time_a || null,
     time_b: dadosReais?.time_b || null,
+    // IDs resolvidos dos times — ver Gate 6 (verificarExposicaoCorrelacionada).
+    // Precisa rodar supabase/migration_gate6.sql antes disso funcionar.
+    id_time_a: dadosReais?.id_time_a ?? null,
+    id_time_b: dadosReais?.id_time_b ?? null,
     // Só relevante pra "Dupla Chance" — ver Regra 13 do system prompt.
     // Sem isso, "Dupla Chance" nunca pode ser resolvida automaticamente.
     lado_aprovado: result.lado_aprovado || null,
@@ -566,27 +618,35 @@ export async function POST(request) {
       ? `\n\n${CRITERIOS_MERCADO[mercado]}`
       : '';
 
-    const res = await fetchComRetry('https://api.anthropic.com/v1/messages', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-api-key': apiKey,
-        'anthropic-version': '2023-06-01',
-      },
-      body: JSON.stringify({
-        model: 'claude-sonnet-4-6',
-        max_tokens: 2000,
-        // temperature: 0 — análise de score/aprovação precisa ser
-        // determinística pro mesmo dado de entrada. Sem isso, o mesmo jogo
-        // com os mesmos dados podia gerar scores diferentes em execuções
-        // diferentes (ex: reanálise após cache expirar), o que quebra
-        // qualquer tentativa de calibração — você estaria medindo ruído do
-        // sampling da IA junto com o sinal real do critério.
-        temperature: 0,
-        system: montarSystemPrompt(),
-        messages: [{
-          role: 'user',
-          content: `Analise "${jogo}" para o mercado "${mercado}". Score mínimo para aprovar: ${min}/100.
+    // Gate 6 roda em paralelo com a chamada à IA — mesmo racional do
+    // contexto de calibração: é uma leitura independente no Supabase, não
+    // faz sentido esperar a IA responder pra só depois começar essa query.
+    const promiseExposicao = dadosReais.disponivel
+      ? verificarExposicaoCorrelacionada(session.userId, dadosReais.id_time_a, dadosReais.id_time_b)
+      : Promise.resolve(null);
+
+    const [res, exposicaoCorrelacionada] = await Promise.all([
+      fetchComRetry('https://api.anthropic.com/v1/messages', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-api-key': apiKey,
+          'anthropic-version': '2023-06-01',
+        },
+        body: JSON.stringify({
+          model: 'claude-sonnet-4-6',
+          max_tokens: 2000,
+          // temperature: 0 — análise de score/aprovação precisa ser
+          // determinística pro mesmo dado de entrada. Sem isso, o mesmo jogo
+          // com os mesmos dados podia gerar scores diferentes em execuções
+          // diferentes (ex: reanálise após cache expirar), o que quebra
+          // qualquer tentativa de calibração — você estaria medindo ruído do
+          // sampling da IA junto com o sinal real do critério.
+          temperature: 0,
+          system: montarSystemPrompt(),
+          messages: [{
+            role: 'user',
+            content: `Analise "${jogo}" para o mercado "${mercado}". Score mínimo para aprovar: ${min}/100.
 ${blocoCriterios}
 ${blocoCalibracao}
 
@@ -594,9 +654,11 @@ ${blocoDados}
 
 Responda SOMENTE JSON válido sem markdown, neste formato exato:
 {"evento":"nome formatado","competicao":"liga ou null","score":0-100,"aprovado":bool,"odds_estimada":"1.XX","probabilidade_real":0-100,"criterios_atendidos":["..."],"criterios_nao_atendidos":["..."],"alertas":[],"insight":"frase curta explicando o score, citando dado real se houver","resumo":"2-3 frases operacionais para o trader","lado_aprovado":"1X ou X2 (APENAS se mercado for Dupla Chance, indicando qual lado você aprovou — Time A não perde = 1X, Time B não perde = X2); para qualquer outro mercado, sempre null"}`
-        }]
-      }),
-    }, { tentativas: 1, timeoutMs: 50000 });
+          }]
+        }),
+      }, { tentativas: 1, timeoutMs: 50000 }),
+      promiseExposicao,
+    ]);
 
     if (!res.ok) {
       logErro('anthropic_call', { jogo, mercado, status: res.status }, await res.text().catch(() => 'sem corpo'));
@@ -617,6 +679,15 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
     // IA tenha aprovado — não depende mais só da IA "lembrar" da Regra 12.
     if (dadosReais.disponivel) {
       aplicarEnforcementDeterministico(mercado, dadosReais, result, min);
+    }
+
+    // Gate 6 — não reverte aprovação (ver racional na função), só anexa
+    // alerta quando o sinal segue aprovado E existe correlação real.
+    if (result.aprovado && exposicaoCorrelacionada?.length) {
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] Exposição correlacionada: já existe ${exposicaoCorrelacionada.length} sinal(is) aprovado(s) hoje pra esse MESMO confronto (mercado(s): ${exposicaoCorrelacionada.join(', ')}). Isso não invalida esse sinal — só significa que o stake combinado nos dois depende do mesmo evento, não são exposições independentes. Considere isso no dimensionamento — Gate 6.`,
+      ];
     }
 
     // Log automático de TODA análise real (aprovada ou reprovada) — é o que
