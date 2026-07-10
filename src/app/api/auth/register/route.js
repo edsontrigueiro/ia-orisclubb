@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { getSupabase } from '@/lib/supabase';
+import { setSessionCookies } from '@/lib/authCookies';
 
 export async function POST(request) {
   try {
@@ -15,11 +16,17 @@ export async function POST(request) {
       options: { data: { full_name: name } }
     });
     if (error) return NextResponse.json({ error: error.message }, { status: 400 });
-    return NextResponse.json({
-      token: data.session?.access_token || null,
-      refresh_token: data.session?.refresh_token || null,
-      expires_at: data.session?.expires_at || null,
-      user: { id: data.user.id, email: data.user.email }
+
+    // Se o projeto Supabase exigir confirmação de e-mail, data.session vem
+    // null aqui — não tem sessão pra criar cookie ainda, o usuário só loga
+    // depois de confirmar. "sessaoCriada" substitui o antigo check
+    // "if (data.token)" que o frontend fazia pra decidir isso — o token em
+    // si não existe mais no corpo da resposta.
+    const response = NextResponse.json({
+      user: { id: data.user.id, email: data.user.email },
+      sessaoCriada: !!data.session,
     });
+    if (data.session) setSessionCookies(response, data.session);
+    return response;
   } catch { return NextResponse.json({ error: 'Erro interno.' }, { status: 500 }); }
 }
