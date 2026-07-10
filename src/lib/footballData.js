@@ -225,16 +225,22 @@ export function ehCompeticaoDeCopa(round, ligaNome) {
 // "value" extrair. Só mercados com correspondência INEQUÍVOCA com um mercado
 // padrão de casa de apostas entram aqui — "Lay 2x2" e "Lay Empate" não têm
 // equivalente direto e ambíguo seria pior que não comparar.
+// "complemento" = o valor que fecha o par de duas pontas dentro do MESMO
+// tipo de aposta (ex: "Over 1.5" x "Under 1.5") — usado pra de-vigar a odd
+// (remover a margem da casa) sem nenhuma chamada extra de API, já que os
+// dois valores vêm na mesma resposta de /odds. Só existe pra mercados de
+// duas saídas puras; Double Chance (Dupla Chance/Lay Empate) tem 3 saídas
+// sobrepostas e não entra nesse cálculo — ver Gate 7 no route.js.
 const ODDS_MAPA = {
-  '+1.5 Gols':      { bet: 'Goals Over/Under', value: 'Over 1.5' },
-  '+0.5 Gols':      { bet: 'Goals Over/Under', value: 'Over 0.5' },
-  'Under 3.5 Gols': { bet: 'Goals Over/Under', value: 'Under 3.5' },
+  '+1.5 Gols':      { bet: 'Goals Over/Under', value: 'Over 1.5', complemento: 'Under 1.5' },
+  '+0.5 Gols':      { bet: 'Goals Over/Under', value: 'Over 0.5', complemento: 'Under 0.5' },
+  'Under 3.5 Gols': { bet: 'Goals Over/Under', value: 'Under 3.5', complemento: 'Over 3.5' },
   'Dupla Chance':   { bet: 'Double Chance', value: null }, // valor varia conforme quem é o favorito, tratado abaixo
   // Lay Empate = apostar CONTRA o empate = exatamente o valor "Home/Away"
   // do mercado Double Chance (casas de apostas já vendem isso pronto).
   'Lay Empate':      { bet: 'Double Chance', value: 'Home/Away' },
-  'BTTS Não':        { bet: 'Both Teams Score', value: 'No' },
-  '+0.5 Gols 1T':    { bet: 'Goals Over/Under First Half', value: 'Over 0.5' },
+  'BTTS Não':        { bet: 'Both Teams Score', value: 'No', complemento: 'Yes' },
+  '+0.5 Gols 1T':    { bet: 'Goals Over/Under First Half', value: 'Over 0.5', complemento: 'Under 0.5' },
 };
 
 // Busca a odd real de mercado pro confronto, se o plano da API-Football
@@ -277,18 +283,45 @@ async function buscarOddsReais(fixtureId, mercado, headers) {
     // Genérico: pega a média da odd pro valor específico do mercado (ex:
     // "Over 1.5" em Goals Over/Under, "No" em Both Teams Score, "Home/Away"
     // em Double Chance pra Lay Empate) entre todas as casas que oferecem.
+    // Também coleta o valor COMPLEMENTAR (mesma resposta, sem custo extra)
+    // quando o mapa define um — é o que permite de-vigar a odd abaixo.
     const valores = [];
+    const valoresComplemento = [];
     for (const bm of bookmakers) {
       const aposta = bm.bets?.find(b => b.name === mapa.bet);
       const v = aposta?.values?.find(v => v.value === mapa.value);
       if (v) valores.push(parseFloat(v.odd));
+      if (mapa.complemento) {
+        const vc = aposta?.values?.find(v => v.value === mapa.complemento);
+        if (vc) valoresComplemento.push(parseFloat(vc.odd));
+      }
     }
     if (valores.length === 0) return null;
+    const oddMedia = +(valores.reduce((a, b) => a + b, 0) / valores.length).toFixed(2);
+
+    // De-vig: soma das probabilidades implícitas das duas pontas (1/odd)
+    // é sempre > 1 numa casa de apostas real — o excesso é a margem da
+    // casa (overround). Dividir a probabilidade bruta do lado que nos
+    // interessa por essa soma remove a margem e dá a probabilidade "justa"
+    // que o mercado está de fato precificando. Só calculável quando há
+    // odd do complemento também cotada (nem toda casa lista os dois lados
+    // do mesmo tipo de aposta) — se não houver, fica null e o Gate 7 no
+    // route.js simplesmente não se aplica pra essa análise.
+    let probabilidadeDevigada = null;
+    if (mapa.complemento && valoresComplemento.length > 0) {
+      const oddComplementoMedia = valoresComplemento.reduce((a, b) => a + b, 0) / valoresComplemento.length;
+      const probBruta = 1 / oddMedia;
+      const probComplementoBruta = 1 / oddComplementoMedia;
+      const overround = probBruta + probComplementoBruta;
+      probabilidadeDevigada = +((probBruta / overround) * 100).toFixed(1);
+    }
+
     return {
       mercado,
       valor: mapa.value,
-      odd_media: +(valores.reduce((a, b) => a + b, 0) / valores.length).toFixed(2),
+      odd_media: oddMedia,
       casas_consultadas: valores.length,
+      probabilidade_devigada: probabilidadeDevigada,
     };
   } catch (e) {
     logErro('buscarOddsReais', { fixtureId, mercado }, e);
