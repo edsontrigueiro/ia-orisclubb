@@ -183,6 +183,46 @@ async function mediaEscanteios(fixtures, headers) {
 // B), pra poder buscar a odd real DESSE confronto e identificar a
 // competição exata em que ele está sendo disputado (não a próxima
 // competição genérica de cada time isolado, que pode ser outra).
+// Busca a posição na tabela de cada time — só usado no mercado "Dupla
+// Chance", e só quando os dois times estão na MESMA liga+temporada (é o
+// caso comum de liga doméstica; se divergem — ex: times de confederações
+// diferentes — comparar posição em tabelas diferentes não diz nada útil,
+// então nem tenta). Reforça (ou contradiz) o critério de "favorito claro"
+// que hoje só olha média de gols — um time pode ter médias parecidas com
+// o adversário mas estar 10 posições acima na tabela por eficiência
+// (menos gols sofridos em jogos decisivos, não só volume). Retorna null
+// em qualquer cenário sem tabela tradicional disponível (grupo de copa
+// recém-começado, liga sem esse endpoint no plano da API) — nunca inventa
+// posição a partir de outro dado.
+async function buscarClassificacao(leagueId, season, idA, idB, headers) {
+  if (!leagueId || !season) return null;
+  try {
+    const res = await fetchComRetry(
+      `https://v3.football.api-sports.io/standings?league=${leagueId}&season=${season}`,
+      { headers }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    // A API aninha em league.standings[0] pro caso comum (liga com tabela
+    // única); ligas com grupos (ex: fase de grupos) trazem standings[1..N],
+    // uma por grupo — não tenta adivinhar qual grupo é o certo nesse caso,
+    // simplesmente não acha o time em standings[0] e retorna null.
+    const tabela = data?.response?.[0]?.league?.standings?.[0] || [];
+    if (tabela.length === 0) return null;
+    const entradaA = tabela.find(t => t.team?.id === idA);
+    const entradaB = tabela.find(t => t.team?.id === idB);
+    if (!entradaA || !entradaB) return null;
+    return {
+      total_times_liga: tabela.length,
+      time_a: { posicao: entradaA.rank, pontos: entradaA.points, saldo_gols: entradaA.goalsDiff },
+      time_b: { posicao: entradaB.rank, pontos: entradaB.points, saldo_gols: entradaB.goalsDiff },
+    };
+  } catch (e) {
+    logErro('buscarClassificacao', { leagueId, season }, e);
+    return null;
+  }
+}
+
 async function buscarFixtureFuturo(idA, idB, headers) {
   try {
     const res = await fetchComRetry(
@@ -325,6 +365,57 @@ async function buscarOddsReais(fixtureId, mercado, headers) {
     };
   } catch (e) {
     logErro('buscarOddsReais', { fixtureId, mercado }, e);
+    return null;
+  }
+}
+
+// De-vig de verdade pra Dupla Chance/Lay Empate — o Gate 7 (baseado em
+// buscarOddsReais acima) deixa esses dois de fora porque Double Chance é
+// mercado de 3 saídas SOBREPOSTAS (Home/Draw, Draw/Away, Home/Away cada
+// um cobre 2 dos 3 resultados possíveis) — a soma das probabilidades
+// implícitas dos 3 dá 2 + overround, não 1 + overround como nos mercados
+// de duas pontas puras, então o mesmo cálculo simples do Gate 7 dá
+// resultado errado se aplicado aqui.
+// A solução correta é usar o mercado "Match Winner" (1X2 clássico: Home,
+// Draw, Away, mutuamente exclusivos) da MESMA resposta de /odds que já é
+// buscada — sem chamada de API extra, só um bet type diferente dentro do
+// mesmo payload. Com os 3 valores mutuamente exclusivos, o de-vig padrão
+// (dividir cada probabilidade bruta pela soma das três) é matematicamente
+// correto.
+async function buscarOddsMatchWinner(fixtureId, headers) {
+  if (!fixtureId) return null;
+  try {
+    const res = await fetchComRetry(
+      `https://v3.football.api-sports.io/odds?fixture=${fixtureId}`,
+      { headers }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const bookmakers = data?.response?.[0]?.bookmakers || [];
+    if (bookmakers.length === 0) return null;
+
+    const valores = { Home: [], Draw: [], Away: [] };
+    for (const bm of bookmakers) {
+      const aposta = bm.bets?.find(b => b.name === 'Match Winner');
+      for (const v of (aposta?.values || [])) {
+        if (valores[v.value]) valores[v.value].push(parseFloat(v.odd));
+      }
+    }
+    const media = arr => arr.length ? arr.reduce((a, b) => a + b, 0) / arr.length : null;
+    const oddHome = media(valores.Home), oddDraw = media(valores.Draw), oddAway = media(valores.Away);
+    if (oddHome == null || oddDraw == null || oddAway == null) return null;
+
+    const pHome = 1 / oddHome, pDraw = 1 / oddDraw, pAway = 1 / oddAway;
+    const overround = pHome + pDraw + pAway;
+
+    return {
+      casas_consultadas: bookmakers.length,
+      prob_devigada_home: +((pHome / overround) * 100).toFixed(1),
+      prob_devigada_draw: +((pDraw / overround) * 100).toFixed(1),
+      prob_devigada_away: +((pAway / overround) * 100).toFixed(1),
+    };
+  } catch (e) {
+    logErro('buscarOddsMatchWinner', { fixtureId }, e);
     return null;
   }
 }
@@ -536,6 +627,41 @@ async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
 // opts.incluirEscanteios: força a busca de escanteio independente do
 //   mercado — usado pelo preview de estatísticas na grade do dia, que quer
 //   mostrar escanteio sempre, sem precisar fingir um mercado específico.
+// Fixture congestion: dias desde o último jogo e quantos jogos o time
+// disputou nos últimos 7/14 dias, contados a partir da data do PRÓXIMO
+// jogo (não de "agora") — pra medir o desgaste real que o time vai levar
+// pra entrada em campo, não desgaste até o momento em que a análise foi
+// rodada. Se a data do próximo jogo ainda não foi resolvida (raro — H2H
+// futuro não encontrado), cai pra "agora" como aproximação, com a mesma
+// lista de jogos recentes já buscada (zero custo de API extra).
+// Deliberadamente NÃO é um gate — calendário apertado nem sempre piora o
+// desempenho (times grandes rotacionam elenco pra preservar titulares;
+// times pequenos às vezes não têm profundidade de elenco pra rotacionar e
+// SENTEM mais o desgaste). Direção do efeito depende de contexto que só a
+// IA consegue julgar — por isso vira dado informativo + instrução no
+// prompt (Regra 15), não reprovação automática.
+function calcularDescanso(jogosRecentesBrutos, dataProximoJogo) {
+  if (!jogosRecentesBrutos?.length) return null;
+  const dataRef = dataProximoJogo ? new Date(dataProximoJogo) : new Date();
+  const ordenados = [...jogosRecentesBrutos]
+    .filter(j => j.data)
+    .sort((a, b) => new Date(b.data) - new Date(a.data));
+  if (ordenados.length === 0) return null;
+
+  const diasDesde = j => (dataRef - new Date(j.data)) / 86400000;
+  const diasDesdeUltimoJogo = Math.round(diasDesde(ordenados[0]));
+  // Só conta jogos ANTES da data de referência (dias >= 0) — evita contar
+  // o próprio jogo futuro caso ele já apareça na lista por algum motivo.
+  const jogosUltimos7Dias = ordenados.filter(j => diasDesde(j) >= 0 && diasDesde(j) <= 7).length;
+  const jogosUltimos14Dias = ordenados.filter(j => diasDesde(j) >= 0 && diasDesde(j) <= 14).length;
+
+  return {
+    dias_desde_ultimo_jogo: diasDesdeUltimoJogo,
+    jogos_ultimos_7_dias: jogosUltimos7Dias,
+    jogos_ultimos_14_dias: jogosUltimos14Dias,
+  };
+}
+
 export async function getFootballData(jogo, opts = {}) {
   const { mercado = null, incluirEscanteios = null } = opts;
   const key = process.env.FOOTBALL_API_KEY;
@@ -578,13 +704,19 @@ export async function getFootballData(jogo, opts = {}) {
   // pedido via incluirEscanteios (preview de estatísticas).
   const precisaEscanteios = incluirEscanteios ?? (mercado === '+8.5 Escanteios');
 
-  const [h2h, statsA, statsB, formaA, formaB, fixtureFuturo] = await Promise.all([
+  // Classificação só faz sentido pro mercado que usa "favorito claro" como
+  // critério central, e só quando os dois times estão comprovadamente na
+  // mesma liga+temporada (senão a comparação de posição não significa nada).
+  const precisaClassificacao = mercado === 'Dupla Chance' && leagueIdA && leagueIdA === leagueIdB && seasonA === seasonB;
+
+  const [h2h, statsA, statsB, formaA, formaB, fixtureFuturo, classificacao] = await Promise.all([
     buscarHeadToHead(idA, idB, headers),
     buscarEstatisticasTime(idA, leagueIdA, seasonA, headers),
     buscarEstatisticasTime(idB, leagueIdB, seasonB, headers),
     buscarFormaRecente(idA, headers, 10, precisaEscanteios),
     buscarFormaRecente(idB, headers, 10, precisaEscanteios),
     buscarFixtureFuturo(idA, idB, headers),
+    precisaClassificacao ? buscarClassificacao(leagueIdA, seasonA, idA, idB, headers) : Promise.resolve(null),
   ]);
 
   // Escanteios do H2H — média dos confrontos diretos específicos entre
@@ -595,6 +727,14 @@ export async function getFootballData(jogo, opts = {}) {
 
   const oddsReais = mercado && ODDS_MAPA[mercado]
     ? await buscarOddsReais(fixtureFuturo?.id, mercado, headers)
+    : null;
+
+  // De-vig correto (via Match Winner/1X2) só faz sentido pros dois
+  // mercados que o Gate 7 deixa de fora — ver comentário em
+  // buscarOddsMatchWinner. Não busca pros outros pra não gastar chamada
+  // à toa numa análise que nunca vai usar esse dado.
+  const oddsMatchWinner = (mercado === 'Dupla Chance' || mercado === 'Lay Empate')
+    ? await buscarOddsMatchWinner(fixtureFuturo?.id, headers)
     : null;
 
   // Prioriza a competição do confronto EXATO (achado via H2H) pra decidir
@@ -634,6 +774,14 @@ export async function getFootballData(jogo, opts = {}) {
   if (formaA) delete formaA._jogos_recentes_brutos;
   if (formaB) delete formaB._jogos_recentes_brutos;
 
+  // Anexado DEPOIS de tirar _jogos_recentes_brutos do que vai pro prompt,
+  // mas calculado a partir da mesma lista (jogosRecentesA/B) — zero
+  // chamada de API extra. Fica dentro de forma_recente_time_a/b (via
+  // formaA.descanso) porque é semanticamente parte da forma recente do
+  // time, não um bloco novo separado que a IA precisaria aprender a olhar.
+  if (formaA) formaA.descanso = calcularDescanso(jogosRecentesA, fixtureFuturo?.data);
+  if (formaB) formaB.descanso = calcularDescanso(jogosRecentesB, fixtureFuturo?.data);
+
   return {
     disponivel: true,
     time_a: timeA,
@@ -661,6 +809,15 @@ export async function getFootballData(jogo, opts = {}) {
     data_jogo: fixtureFuturo?.data || null,
     liga_time_a: proximoJogoA?.league?.name || null,
     liga_time_b: proximoJogoB?.league?.name || null,
+    // Posição/pontos/saldo na tabela — null salvo quando mercado é "Dupla
+    // Chance" E os dois times estão comprovadamente na mesma liga+temporada
+    // (ver buscarClassificacao). Reforça o critério de "favorito claro" com
+    // um dado que médias de gols sozinhas não capturam: eficiência em jogos
+    // decisivos, não só volume.
+    classificacao,
+    // De-vig via Match Winner — null salvo pra Dupla Chance/Lay Empate com
+    // odds cotadas nos 3 resultados (ver Gate 8 em analyze/route.js).
+    odds_1x2_devigada: oddsMatchWinner,
     temporada_time_a: seasonA,
     temporada_time_b: seasonB,
     // true = competição de copa/mata-mata (Copa do Mundo, Libertadores,
