@@ -398,6 +398,34 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
       ];
     }
   }
+
+  // Gate 7 — de-vig de odds reais. Só roda quando "probabilidade_devigada"
+  // veio calculada (ver buscarOddsReais em footballData.js — exige odd do
+  // complemento cotada, nem toda casa lista os dois lados). Cobre só os 5
+  // mercados de duas pontas puras (Over/Under, BTTS); Dupla Chance e Lay
+  // Empate ficam de fora por ora — Double Chance é mercado de 3 saídas
+  // sobrepostas, de-vig correto exigiria o mercado Match Winner (1X2) à
+  // parte, não implementado ainda.
+  // Racional: o mercado de apostas agrega a opinião de milhares de
+  // apostadores e ajustes de linha em tempo real — é a única fonte de
+  // sinal do sistema que é EXTERNA aos próprios dados que alimentam a IA.
+  // Se a odd de-vigada implica uma probabilidade bem abaixo do mínimo de
+  // confiança exigido pra esse mercado, o mercado está "discordando" da
+  // aprovação, possivelmente com base em informação que os dados de forma/
+  // H2H não capturam (lesão, desfalque, mando trocado por decisão da CBF).
+  const DIVERGENCIA_ODDS_MAXIMA = 15; // pontos percentuais
+  const probDevigada = dadosReais.odds_mercado_real?.probabilidade_devigada;
+  if (probDevigada != null) {
+    const divergencia = min - probDevigada;
+    if (divergencia > DIVERGENCIA_ODDS_MAXIMA) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] O mercado real de apostas precifica esse resultado em ${probDevigada}% de probabilidade (odd de-vigada, margem da casa removida), bem abaixo do mínimo de confiança exigido pra esse mercado (${min}%) — divergência de ${divergencia.toFixed(1)}pp. Aprovação da IA foi revertida pelo código — Gate 7.`,
+      ];
+    }
+  }
 }
 
 // Loga toda análise real (não-demo, sem erro) numa tabela própria,
