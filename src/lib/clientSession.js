@@ -1,103 +1,57 @@
 'use client';
 
-// Centraliza toda a gestão de sessão no client: armazenamento, expiração e
-// renovação automática do access_token. Antes, o token era salvo sem
-// nenhuma noção de quando expirava — isso causava 401 silencioso em
-// qualquer sessão ativa por mais de ~1h (vida padrão do JWT do Supabase).
+// Sessão gerenciada inteiramente via cookie httpOnly (st_token / st_refresh),
+// setado pelo próprio servidor em /api/auth/login|register|refresh — o
+// JavaScript do client NUNCA tem acesso ao token de acesso nem ao
+// refresh_token. Isso fecha o buraco que existia antes: os dois viviam em
+// localStorage, então qualquer XSS no app conseguia ler e sequestrar a
+// sessão. O único dado guardado no client agora é "user" (id + email), que
+// não é segredo — serve só pra exibir na UI sem precisar bater no servidor
+// de novo só pra mostrar o e-mail no topo da tela.
 
-const KEYS = {
-  token: 'st_token',
-  refresh: 'st_refresh',
-  expiresAt: 'st_expires_at',
-  user: 'st_user',
-};
+const USER_KEY = 'st_user';
 
-export function saveSession({ token, refresh_token, expires_at, user }) {
-  if (token) {
-    document.cookie = `st_token=${token}; path=/; max-age=${7 * 24 * 3600}; SameSite=Lax`;
-    localStorage.setItem(KEYS.token, token);
-  }
-  if (refresh_token) localStorage.setItem(KEYS.refresh, refresh_token);
-  if (expires_at) localStorage.setItem(KEYS.expiresAt, String(expires_at));
-  if (user) localStorage.setItem(KEYS.user, JSON.stringify(user));
-}
-
-export function getStoredToken() {
-  return localStorage.getItem(KEYS.token);
+export function saveSession({ user }) {
+  if (user) localStorage.setItem(USER_KEY, JSON.stringify(user));
 }
 
 export function getStoredUser() {
-  try { return JSON.parse(localStorage.getItem(KEYS.user) || 'null'); }
+  try { return JSON.parse(localStorage.getItem(USER_KEY) || 'null'); }
   catch { return null; }
 }
 
-export function clearSession() {
-  document.cookie = 'st_token=; path=/; max-age=0';
-  localStorage.removeItem(KEYS.token);
-  localStorage.removeItem(KEYS.refresh);
-  localStorage.removeItem(KEYS.expiresAt);
-  localStorage.removeItem(KEYS.user);
-}
-
-function isExpiringSoon() {
-  const expiresAt = Number(localStorage.getItem(KEYS.expiresAt) || 0);
-  if (!expiresAt) return false; // sem info de expiração, não bloqueia o fluxo
-  const nowSeconds = Date.now() / 1000;
-  return expiresAt - nowSeconds < 60; // renova com 60s de margem
-}
-
-// Troca o refresh_token por um access_token novo. Retorna o novo token
-// (string) em caso de sucesso, ou null se o refresh_token também for
-// inválido/expirado (aí sim a sessão acabou de verdade).
-export async function refreshSession() {
-  const refresh_token = localStorage.getItem(KEYS.refresh);
-  if (!refresh_token) return null;
-
+// Pede pro servidor apagar os cookies httpOnly — JS não consegue apagar
+// cookie httpOnly diretamente, só o servidor (ver /api/auth/logout). Limpa
+// o localStorage primeiro, de forma síncrona, pra UI esquecer o usuário
+// mesmo que a chamada de rede falhe.
+export async function clearSession() {
+  localStorage.removeItem(USER_KEY);
   try {
-    const res = await fetch('/api/auth/refresh', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ refresh_token }),
-    });
-    if (!res.ok) return null;
-    const data = await res.json();
-    if (!data.token) return null;
-    saveSession(data);
-    return data.token;
-  } catch {
-    return null;
-  }
+    await fetch('/api/auth/logout', { method: 'POST', credentials: 'same-origin' });
+  } catch {}
 }
 
-// Wrapper de fetch autenticado: garante token válido antes da chamada e,
-// se ainda assim vier 401 (ex: token revogado, relógio do cliente
-// dessincronizado), tenta renovar uma vez e refaz a chamada original.
-// Se a sessão realmente acabou, retorna { sessionExpired: true } em vez de
-// lançar erro genérico — quem chama decide o que mostrar pro usuário.
+// Wrapper de fetch autenticado. O cookie httpOnly já vai junto sozinho em
+// toda chamada same-origin — não precisa (nem pode) montar header
+// Authorization manualmente como antes. Se vier 401 (access_token
+// expirado), tenta renovar via /api/auth/refresh — que lê o st_refresh
+// (também httpOnly) direto do cookie da própria requisição, sem precisar
+// de nada vindo do client — e refaz a chamada original uma vez. Se o
+// refresh também falhar, a sessão realmente acabou.
 export async function authFetch(url, options = {}) {
-  let token = getStoredToken();
+  const doFetch = () => fetch(url, { ...options, credentials: 'same-origin' });
 
-  if (isExpiringSoon()) {
-    const refreshed = await refreshSession();
-    if (refreshed) token = refreshed;
-  }
-
-  const doFetch = (tok) => fetch(url, {
-    ...options,
-    headers: { ...(options.headers || {}), Authorization: `Bearer ${tok}` },
-  });
-
-  let res = await doFetch(token);
+  let res = await doFetch();
 
   if (res.status === 401) {
-    const refreshed = await refreshSession();
-    if (!refreshed) {
-      clearSession();
+    const refreshRes = await fetch('/api/auth/refresh', { method: 'POST', credentials: 'same-origin' });
+    if (!refreshRes.ok) {
+      await clearSession();
       return { sessionExpired: true };
     }
-    res = await doFetch(refreshed);
+    res = await doFetch();
     if (res.status === 401) {
-      clearSession();
+      await clearSession();
       return { sessionExpired: true };
     }
   }
