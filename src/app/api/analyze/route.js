@@ -118,6 +118,7 @@ const CRITERIOS_MERCADO = {
 
   'Dupla Chance': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Dupla Chance (1X ou X2) no favorito:
 - Só aprove se houver diferença CLARA de qualidade entre os times nos dados: favorito com média de gols marcados >= 1.8 e média de gols sofridos <= 1.2; adversário com média de gols sofridos >= 1.5. Se as médias forem parecidas entre os dois times, isso é um jogo equilibrado — REPROVE, mesmo que um dos nomes "pareça" favorito.
+- Se o campo "classificacao" estiver presente, ele é um SEGUNDO caminho pra caracterizar favoritismo claro, independente do critério de médias de gols acima: diferença de 8+ posições na tabela, OU diferença de saldo de gols ("saldo_gols") de 15+, entre os dois times É por si só diferença clara de qualidade — mesmo que as médias de gols dos dois pareçam parecidas (isso acontece quando o favorito vence por eficiência em jogos decisivos, não por volume ofensivo). Nesse caso, pode aprovar mesmo sem o critério de médias acima ser satisfeito — mas cite os números de "classificacao" explicitamente no "insight" como o motivo. Se "classificacao" não estiver presente, ignore esse critério (não é obrigatório, é um caminho A MAIS de aprovação, nunca um requisito a mais).
 - Priorize "como_mandante" do Time A e "como_visitante" do Time B (não a média geral) — um time pode ser ótimo em casa e mediano fora, e é justamente o mando de campo que decide esse mercado. EXCEÇÃO: se "modo_copa" for true (torneio internacional, possivelmente em sede neutra), esse mando pode não refletir uma vantagem real de jogar "em casa" — nesse caso baseie-se na forma geral combinada em vez de insistir no recorte mandante/visitante.
 - Nos confrontos diretos disponíveis (até 10), o favorito não deve ter mais de 1 derrota — dê peso extra aos confrontos com "mesmo_mando_atual": true. 2+ derrotas no H2H é sinal de zebra recorrente — reduza o score fortemente.
 - Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times. Menos que isso, reduza o score e diga isso explicitamente em "alertas".
@@ -426,6 +427,36 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
       ];
     }
   }
+
+  // Gate 8 — de-vig via Match Winner (1X2), cobre Dupla Chance e Lay
+  // Empate (o Gate 7 deixa esses dois de fora — ver comentário em
+  // buscarOddsMatchWinner no footballData.js, Double Chance é mercado de
+  // 3 saídas sobrepostas e não de-viga com o cálculo simples de 2 pontas).
+  // Pra Dupla Chance, precisa saber qual lado a IA aprovou (lado_aprovado)
+  // pra somar a probabilidade certa — por isso só roda AQUI, depois da IA
+  // já ter respondido, nunca antes.
+  if (dadosReais.odds_1x2_devigada) {
+    const { prob_devigada_home, prob_devigada_draw, prob_devigada_away } = dadosReais.odds_1x2_devigada;
+    let probRelevante = null;
+    if (mercado === 'Lay Empate') {
+      probRelevante = 100 - prob_devigada_draw; // P(NÃO empate)
+    } else if (mercado === 'Dupla Chance' && result.lado_aprovado === '1X') {
+      probRelevante = prob_devigada_home + prob_devigada_draw;
+    } else if (mercado === 'Dupla Chance' && result.lado_aprovado === 'X2') {
+      probRelevante = prob_devigada_draw + prob_devigada_away;
+    }
+    if (probRelevante != null) {
+      const divergencia = min - probRelevante;
+      if (divergencia > DIVERGENCIA_ODDS_MAXIMA) {
+        result.aprovado = false;
+        result.score = Math.min(result.score, min - 1);
+        result.alertas = [
+          ...(result.alertas || []),
+          `[Enforcement automático] O mercado real (via Match Winner 1X2, de-vigado) precifica esse resultado em ${probRelevante.toFixed(1)}% de probabilidade, bem abaixo do mínimo de confiança exigido pra esse mercado (${min}%) — divergência de ${divergencia.toFixed(1)}pp. Aprovação da IA foi revertida pelo código — Gate 8.`,
+        ];
+      }
+    }
+  }
 }
 
 // Gate 6 — correlação de exposição: mais de um sinal APROVADO no mesmo dia
@@ -564,6 +595,7 @@ function montarSystemPrompt() {
 12. CUIDADO COM PERCENTUAL CALCULADO EM AMOSTRA PEQUENA: vários campos vêm como percentual (ex: "pct_jogos_1t_total_baixo", "pct_jogos_1t_sem_gols", taxas de "jogos_sem_marcar_gol"/"jogos_sem_sofrer_gol"). Esses percentuais SEMPRE vêm acompanhados de "jogos_considerados" (ou equivalente) — confira esse número antes de confiar no percentual. Um "100%" calculado em 4 ou 5 jogos NÃO tem a mesma força estatística que um "100%" calculado em 15-20 jogos, mesmo sendo o mesmo número — com amostra pequena, a taxa real pode estar bem mais baixa e você ainda não viu o jogo que quebra o padrão. Quando um percentual alto (>= 85%) que está sustentando a aprovação vier de uma amostra de 6 jogos ou menos (e especialmente de recortes como "como_mandante"/"como_visitante"/"ultimos_5", que são subconjuntos pequenos por natureza), aplique um desconto de confiança: ou exija confirmação de outra fonte (H2H, a métrica geral mais ampla) apontando na mesma direção, ou reduza o score abaixo do mínimo do mercado mesmo que o percentual isolado pareça forte. Isso não significa reprovar automaticamente toda amostra pequena — significa não tratar "100% em 4 jogos" com o mesmo peso de "100% em 15 jogos".
 13. Se o mercado for "Dupla Chance", você precisa identificar explicitamente qual lado está sendo aprovado e preencher o campo "lado_aprovado" com "1X" (Time A, o mandante, não perde — vence ou empata) ou "X2" (Time B, o visitante, não perde). Isso não é opcional: é o que permite, dias depois, checar o placar real e saber se a aprovação bateu ou não. Pra qualquer mercado que não seja "Dupla Chance", "lado_aprovado" deve ser sempre null.
 14. Se a mensagem do usuário incluir um bloco "CONTEXTO DE CALIBRAÇÃO HISTÓRICA", esse é o desempenho real e medido desse mercado especificamente (taxa de acerto de sinais aprovados e já resolvidos, com limite inferior de confiança estatística). Use isso SÓ como ajuste de confiança geral, nunca como critério de aprovação: se o limite inferior estiver bem abaixo do esperado pra esse mercado, seja mais conservador no score mesmo que os critérios individuais pareçam bons, e mencione isso no "insight". NUNCA use uma taxa histórica boa pra justificar aprovar um sinal que não atende aos critérios estatísticos do jogo atual — o histórico informa o quanto confiar no sistema como um todo, não substitui a análise do confronto específico. Se esse bloco não estiver presente, é porque ainda não há amostra suficiente desse mercado pra esse cálculo — não trate a ausência como sinal bom ou ruim.
+15. "forma_recente_time_a/b" pode trazer um subcampo "descanso" com "dias_desde_ultimo_jogo", "jogos_ultimos_7_dias" e "jogos_ultimos_14_dias" — calendário do time até a data do confronto analisado. NÃO existe uma direção fixa de "calendário apertado = pior": times grandes costumam rotacionar elenco pra preservar titulares em jogos de calendário cheio (o resultado principal não necessariamente piora); times sem profundidade de elenco sentem mais o desgaste. Use como CONTEXTO pra explicar performance inconsistente quando fizer sentido (ex: "media_gols_marcados" caiu nos "ultimos_5" e o time vinha de 3 jogos em 7 dias — desgaste é uma explicação plausível), não como regra numérica de desconto automático de score. "dias_desde_ultimo_jogo" muito alto (15+) pode indicar falta de ritmo competitivo, principalmente após pausas de seleção — também mencione se relevante. Se "descanso" vier null ou ausente, é porque não havia jogos recentes suficientes com data pra calcular — trate como ausência de dado, não como sinal de calendário tranquilo.
 
 Responda SOMENTE com JSON válido, sem markdown, sem texto fora do JSON.`;
 }
