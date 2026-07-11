@@ -615,25 +615,56 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // zero" (texto do próprio critério). Mesmo racional dos outros gates:
   // essa é uma condição NECESSÁRIA (não suficiente sozinha) que precisa ser
   // garantida em código, não só pedida em texto.
+  //
+  // Também aceita o recorte mando/visitante (Time A mandante, Time B
+  // visitante) como fonte válida de sinal, não só a taxa geral — mesmo
+  // racional do Gate 9/10: a taxa geral mistura jogos em casa e fora, e
+  // pode diluir um sinal real que só aparece no recorte específico desse
+  // jogo. Sem essa extensão, o gate reprovaria à toa um caso onde o sinal
+  // de verdade está lá, só que escondido dentro de uma média maior e mista
+  // — errar pro lado de reprovar aprovação legítima é tão ruim quanto
+  // errar pro lado de aprovar risco real. Amostra mínima 4 pro recorte,
+  // mesma justificativa do Gate 9. Ignorado em modo_copa.
   if (mercado === 'BTTS Não') {
     const LIMIAR_BTTS = 0.30; // mesmo threshold já definido no critério do mercado
+    const AMOSTRA_MINIMA_GATE_RECORTE = 4; // ver comentário no Gate 9
+
     const semMarcarA = taxaCampo(formaA, 'jogos_sem_marcar_gol', 'jogos_considerados');
     const semMarcarB = taxaCampo(formaB, 'jogos_sem_marcar_gol', 'jogos_considerados');
     const semSofrerA = taxaCampo(formaA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
     const semSofrerB = taxaCampo(formaB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
 
+    let temSinalRecorte = false;
+    if (!dadosReais.modo_copa) {
+      const mandanteA = formaA?.como_mandante;
+      const visitanteB = formaB?.como_visitante;
+      const amostraMandanteA = mandanteA?.jogos_considerados;
+      const amostraVisitanteB = visitanteB?.jogos_considerados;
+      const semMarcarMandanteA = taxaCampo(mandanteA, 'jogos_sem_marcar_gol', 'jogos_considerados');
+      const semMarcarVisitanteB = taxaCampo(visitanteB, 'jogos_sem_marcar_gol', 'jogos_considerados');
+      const semSofrerMandanteA = taxaCampo(mandanteA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+      const semSofrerVisitanteB = taxaCampo(visitanteB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+
+      temSinalRecorte =
+        (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semMarcarMandanteA != null && semMarcarMandanteA >= LIMIAR_BTTS) ||
+        (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semMarcarVisitanteB != null && semMarcarVisitanteB >= LIMIAR_BTTS) ||
+        (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerMandanteA != null && semSofrerMandanteA >= LIMIAR_BTTS) ||
+        (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerVisitanteB != null && semSofrerVisitanteB >= LIMIAR_BTTS);
+    }
+
     const temSinal =
       (semMarcarA != null && semMarcarA >= LIMIAR_BTTS) ||
       (semMarcarB != null && semMarcarB >= LIMIAR_BTTS) ||
       (semSofrerA != null && semSofrerA >= LIMIAR_BTTS) ||
-      (semSofrerB != null && semSofrerB >= LIMIAR_BTTS);
+      (semSofrerB != null && semSofrerB >= LIMIAR_BTTS) ||
+      temSinalRecorte;
 
     if (!temSinal) {
       result.aprovado = false;
       result.score = Math.min(result.score, min - 1);
       result.alertas = [
         ...(result.alertas || []),
-        `[Enforcement automático] Nenhum dos dois times mostra sinal estatístico mínimo de possível 0x0 lado a lado (ataque fraco >= ${LIMIAR_BTTS * 100}% ou defesa sólida >= ${LIMIAR_BTTS * 100}%, em nenhum dos quatro cruzamentos). Sem esse sinal, não há base estatística real pra aprovar BTTS Não, segundo o próprio critério do mercado. Aprovação da IA foi revertida pelo código — Gate 11.`,
+        `[Enforcement automático] Nenhum dos dois times mostra sinal estatístico mínimo de possível 0x0 lado a lado (ataque fraco >= ${LIMIAR_BTTS * 100}% ou defesa sólida >= ${LIMIAR_BTTS * 100}%, em nenhum dos quatro cruzamentos, geral ou por recorte de mando/visitante). Sem esse sinal, não há base estatística real pra aprovar BTTS Não, segundo o próprio critério do mercado. Aprovação da IA foi revertida pelo código — Gate 11.`,
       ];
     }
   }
@@ -645,21 +676,42 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // fruto de ataques fracos, não de defesas boas, e não sustentam Under
   // sozinhas com a mesma força). Mesma lógica dos outros gates: condição
   // necessária, garantida em código.
+  //
+  // Mesma extensão do Gate 11: também aceita o recorte mando/visitante
+  // como fonte válida de sinal (defesa sólida do Time A como mandante ou
+  // do Time B como visitante), não só a taxa geral.
   if (mercado === 'Under 3.5 Gols') {
     const LIMIAR_U35 = 0.25; // mesmo threshold já definido no critério do mercado
+    const AMOSTRA_MINIMA_GATE_RECORTE = 4; // ver comentário no Gate 9
+
     const semSofrerA = taxaCampo(formaA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
     const semSofrerB = taxaCampo(formaB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
 
+    let temDefesaSolidaRecorte = false;
+    if (!dadosReais.modo_copa) {
+      const mandanteA = formaA?.como_mandante;
+      const visitanteB = formaB?.como_visitante;
+      const amostraMandanteA = mandanteA?.jogos_considerados;
+      const amostraVisitanteB = visitanteB?.jogos_considerados;
+      const semSofrerMandanteA = taxaCampo(mandanteA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+      const semSofrerVisitanteB = taxaCampo(visitanteB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+
+      temDefesaSolidaRecorte =
+        (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerMandanteA != null && semSofrerMandanteA >= LIMIAR_U35) ||
+        (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerVisitanteB != null && semSofrerVisitanteB >= LIMIAR_U35);
+    }
+
     const temDefesaSolida =
       (semSofrerA != null && semSofrerA >= LIMIAR_U35) ||
-      (semSofrerB != null && semSofrerB >= LIMIAR_U35);
+      (semSofrerB != null && semSofrerB >= LIMIAR_U35) ||
+      temDefesaSolidaRecorte;
 
     if (!temDefesaSolida) {
       result.aprovado = false;
       result.score = Math.min(result.score, min - 1);
       result.alertas = [
         ...(result.alertas || []),
-        `[Enforcement automático] Nenhum dos dois times tem taxa de jogos sem sofrer gol >= ${LIMIAR_U35 * 100}% — sem capacidade defensiva real demonstrada em pelo menos um dos lados, não há base estatística pra confiar em Under 3.5 Gols. Aprovação da IA foi revertida pelo código — Gate 12.`,
+        `[Enforcement automático] Nenhum dos dois times tem taxa de jogos sem sofrer gol >= ${LIMIAR_U35 * 100}% (geral ou por recorte de mando/visitante) — sem capacidade defensiva real demonstrada em pelo menos um dos lados, não há base estatística pra confiar em Under 3.5 Gols. Aprovação da IA foi revertida pelo código — Gate 12.`,
       ];
     }
   }
@@ -848,6 +900,104 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
             `[Enforcement automático] O confronto direto mais recente com o mesmo mando de campo (${maisRecenteMesmoMando.dias_atras} dias atrás: ${maisRecenteMesmoMando.casa} ${maisRecenteMesmoMando.placar_1t} ${maisRecenteMesmoMando.fora} no 1T) contradiz diretamente o critério do mercado — ${explicacao}. Esse é o precedente mais específico disponível pra esse confronto; sozinho já é motivo de reprovação, independente do que a média geral (10 jogos) indicar. Aprovação da IA foi revertida pelo código — Gate 18.`,
           ];
         }
+      }
+    }
+  }
+
+  // ── Gates 19-22: mesmo padrão de veto do Gate 18 (H2H mais recente com
+  // mesmo mando, dentro de 730 dias, como precedente que sozinho já basta
+  // pra reprovar quando contradiz o critério central), agora estendido dos
+  // mercados de 1º tempo pros de gol cheio. O Gate 18 provou o valor desse
+  // padrão no caso Vancouver x York — não faz sentido restringir isso só a
+  // 1T quando o mesmo tipo de contradição pode acontecer em qualquer
+  // mercado de gols: a IA vê o H2H mais relevante contradizendo, anota isso
+  // no alerta, e aprova mesmo assim porque a média geral "pesa mais" no
+  // julgamento holístico. Fecha essa mesma brecha nos 4 mercados que
+  // seguem o padrão simples de "conta os gols do placar e compara contra
+  // um limiar" (não se aplica a Lay 2x2/Dupla Chance/Lay Empate, que já têm
+  // seus próprios vetos de H2H mais específicos nos Gates 13-16, nem a
+  // Escanteios, cujo dado de H2H não vem granular o suficiente por jogo).
+  //
+  // Função auxiliar única, reaproveitada nos 4 gates — evita duplicar a
+  // mesma extração/parse de placar quatro vezes.
+  function h2hMaisRecenteMesmoMando(dadosReais) {
+    const h2h = dadosReais.confrontos_diretos || [];
+    return h2h.find(j =>
+      j.mesmo_mando_atual === true &&
+      j.placar &&
+      j.dias_atras != null && j.dias_atras < 730
+    );
+  }
+  function totalGolsPlacar(placar) {
+    const partes = String(placar || '').split('-').map(s => parseInt(s, 10));
+    if (partes.length !== 2 || !Number.isFinite(partes[0]) || !Number.isFinite(partes[1])) return null;
+    return { golsCasa: partes[0], golsFora: partes[1], total: partes[0] + partes[1] };
+  }
+
+  // Gate 19 — +1.5 Gols: H2H mais recente/mesmo mando com total < 2 gols
+  // contradiz diretamente o mercado (precisa >= 2).
+  if (mercado === '+1.5 Gols') {
+    const precedente = h2hMaisRecenteMesmoMando(dadosReais);
+    if (precedente) {
+      const p = totalGolsPlacar(precedente.placar);
+      if (p && p.total < 2) {
+        result.aprovado = false;
+        result.score = Math.min(result.score, min - 1);
+        result.alertas = [
+          ...(result.alertas || []),
+          `[Enforcement automático] O confronto direto mais recente com o mesmo mando de campo (${precedente.dias_atras} dias atrás: ${precedente.casa} ${precedente.placar} ${precedente.fora}) terminou com apenas ${p.total} gol(s) — contradiz diretamente o critério do mercado (precisa de pelo menos 2). Aprovação da IA foi revertida pelo código — Gate 19.`,
+        ];
+      }
+    }
+  }
+
+  // Gate 20 — +0.5 Gols: H2H mais recente/mesmo mando com 0x0 contradiz
+  // diretamente o mercado (precisa >= 1 gol).
+  if (mercado === '+0.5 Gols') {
+    const precedente = h2hMaisRecenteMesmoMando(dadosReais);
+    if (precedente) {
+      const p = totalGolsPlacar(precedente.placar);
+      if (p && p.total === 0) {
+        result.aprovado = false;
+        result.score = Math.min(result.score, min - 1);
+        result.alertas = [
+          ...(result.alertas || []),
+          `[Enforcement automático] O confronto direto mais recente com o mesmo mando de campo (${precedente.dias_atras} dias atrás: ${precedente.casa} ${precedente.placar} ${precedente.fora}) terminou 0x0 — contradiz diretamente o critério do mercado (precisa de pelo menos 1 gol). Aprovação da IA foi revertida pelo código — Gate 20.`,
+        ];
+      }
+    }
+  }
+
+  // Gate 21 — Under 3.5 Gols: H2H mais recente/mesmo mando com total >= 4
+  // gols contradiz diretamente o mercado (precisa <= 3).
+  if (mercado === 'Under 3.5 Gols') {
+    const precedente = h2hMaisRecenteMesmoMando(dadosReais);
+    if (precedente) {
+      const p = totalGolsPlacar(precedente.placar);
+      if (p && p.total >= 4) {
+        result.aprovado = false;
+        result.score = Math.min(result.score, min - 1);
+        result.alertas = [
+          ...(result.alertas || []),
+          `[Enforcement automático] O confronto direto mais recente com o mesmo mando de campo (${precedente.dias_atras} dias atrás: ${precedente.casa} ${precedente.placar} ${precedente.fora}) terminou com ${p.total} gols — contradiz diretamente o critério do mercado (precisa de no máximo 3). Aprovação da IA foi revertida pelo código — Gate 21.`,
+        ];
+      }
+    }
+  }
+
+  // Gate 22 — BTTS Não: H2H mais recente/mesmo mando com AMBOS os times
+  // marcando é precedente direto de BTTS SIM, contradizendo BTTS Não.
+  if (mercado === 'BTTS Não') {
+    const precedente = h2hMaisRecenteMesmoMando(dadosReais);
+    if (precedente) {
+      const p = totalGolsPlacar(precedente.placar);
+      if (p && p.golsCasa >= 1 && p.golsFora >= 1) {
+        result.aprovado = false;
+        result.score = Math.min(result.score, min - 1);
+        result.alertas = [
+          ...(result.alertas || []),
+          `[Enforcement automático] O confronto direto mais recente com o mesmo mando de campo (${precedente.dias_atras} dias atrás: ${precedente.casa} ${precedente.placar} ${precedente.fora}) teve os dois times marcando — precedente direto de BTTS SIM, contradizendo o mercado BTTS Não. Aprovação da IA foi revertida pelo código — Gate 22.`,
+        ];
       }
     }
   }
