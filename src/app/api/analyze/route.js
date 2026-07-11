@@ -480,21 +480,57 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // sozinha não garante comportamento — ver comentário no topo do arquivo),
   // este gate reforça em código, sem depender da IA aplicar a instrução
   // certo toda vez.
-  // Usa "jogos_sem_marcar_gol" do recorte GERAL (forma_recente_time_a/b),
-  // o mesmo campo citado no critério do mercado — não o recorte mando/
-  // visitante (esse já tem amostra mínima própria garantida pelo Gate 4).
+  //
+  // Checa DUAS fontes: a taxa GERAL (forma_recente_time_a/b, sem separar
+  // mando) E a taxa do recorte específico mando/visitante (Time A como
+  // mandante, Time B como visitante — que é o mando REAL desse jogo). A
+  // versão original deste gate só olhava a geral, com a justificativa de
+  // que "o recorte já tem amostra mínima garantida pelo Gate 4" — mas
+  // amostra mínima garantida não é o mesmo que RISCO CHECADO: o Gate 4 só
+  // valida que o recorte tem jogos suficientes pra existir, não que a taxa
+  // dele foi conferida contra o limiar de risco. Foi exatamente esse
+  // buraco que deixou passar IR Reykjavik x Afturelding: taxa GERAL do
+  // Afturelding era 10% (limpa), mas como VISITANTE especificamente (o
+  // mando real do jogo) era 25% (1 em 4) — exatamente no limiar de risco,
+  // e a taxa geral não capturou isso porque dilui o recorte relevante
+  // dentro de uma amostra maior e mista (casa+fora).
+  //
+  // Amostra mínima pra essa checagem de recorte é 4 (não os 6 de
+  // AMOSTRA_MINIMA_RECORTE) — escolha deliberada, não arbitrária: o caso
+  // real que motivou essa correção tinha exatamente n=4. Usar o piso de 6
+  // teria deixado passar o mesmo caso de novo. É um valor de partida, não
+  // calibrado com dado real — ajustar depois pelo protocolo de calibração
+  // de sempre, se a experiência mostrar que n=4 gera falso-positivo demais.
+  //
+  // Ignorado em modo_copa: mando de campo pode não refletir vantagem real
+  // em sede neutra (mesma exceção já aplicada em todo o resto do arquivo).
   if (mercado === '+1.5 Gols') {
     const LIMIAR_SEM_MARCAR = 0.25; // mesmo threshold já definido no critério do mercado
+    const AMOSTRA_MINIMA_GATE_RECORTE = 4; // ver comentário acima — deliberadamente menor que AMOSTRA_MINIMA_RECORTE
+
     const taxaSemMarcarA = taxaSemMarcar(formaA, 'jogos_considerados');
     const taxaSemMarcarB = taxaSemMarcar(formaB, 'jogos_considerados');
-
     const timeARisco = taxaSemMarcarA != null && taxaSemMarcarA >= LIMIAR_SEM_MARCAR;
     const timeBRisco = taxaSemMarcarB != null && taxaSemMarcarB >= LIMIAR_SEM_MARCAR;
 
-    if (timeARisco || timeBRisco) {
+    let timeARiscoRecorte = false, timeBRiscoRecorte = false, taxaMandanteA = null, taxaVisitanteB = null;
+    if (!dadosReais.modo_copa) {
+      const mandanteA = formaA?.como_mandante;
+      const visitanteB = formaB?.como_visitante;
+      taxaMandanteA = taxaCampo(mandanteA, 'jogos_sem_marcar_gol', 'jogos_considerados');
+      taxaVisitanteB = taxaCampo(visitanteB, 'jogos_sem_marcar_gol', 'jogos_considerados');
+      const amostraMandanteA = mandanteA?.jogos_considerados;
+      const amostraVisitanteB = visitanteB?.jogos_considerados;
+      timeARiscoRecorte = taxaMandanteA != null && amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && taxaMandanteA >= LIMIAR_SEM_MARCAR;
+      timeBRiscoRecorte = taxaVisitanteB != null && amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && taxaVisitanteB >= LIMIAR_SEM_MARCAR;
+    }
+
+    if (timeARisco || timeBRisco || timeARiscoRecorte || timeBRiscoRecorte) {
       const partes = [];
-      if (timeARisco) partes.push(`Time A sem marcar em ${(taxaSemMarcarA * 100).toFixed(0)}% dos jogos recentes`);
-      if (timeBRisco) partes.push(`Time B sem marcar em ${(taxaSemMarcarB * 100).toFixed(0)}% dos jogos recentes`);
+      if (timeARisco) partes.push(`Time A sem marcar em ${(taxaSemMarcarA * 100).toFixed(0)}% dos jogos recentes (geral)`);
+      if (timeBRisco) partes.push(`Time B sem marcar em ${(taxaSemMarcarB * 100).toFixed(0)}% dos jogos recentes (geral)`);
+      if (timeARiscoRecorte) partes.push(`Time A sem marcar em ${(taxaMandanteA * 100).toFixed(0)}% dos jogos como mandante`);
+      if (timeBRiscoRecorte) partes.push(`Time B sem marcar em ${(taxaVisitanteB * 100).toFixed(0)}% dos jogos como visitante`);
       result.aprovado = false;
       result.score = Math.min(result.score, min - 1);
       result.alertas = [
@@ -515,29 +551,59 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // gate desta função, texto sozinho não garante que a IA aplica em toda
   // chamada. Reforça em código pra fechar essa brecha antes que ela vire
   // red, igual foi feito pro +1.5 Gols.
+  //
+  // Mesma extensão aplicada ao Gate 9: checa também o recorte mando/
+  // visitante específico (Time A como mandante, Time B como visitante),
+  // não só a taxa geral — pelo mesmo motivo (taxa geral dilui um recorte
+  // de risco real dentro de uma amostra maior e mista). Ignorado em
+  // modo_copa. Amostra mínima 4 pro recorte, mesma justificativa do Gate 9.
   if (mercado === '+0.5 Gols') {
     const LIMIAR_0_5 = 0.25; // mesmo threshold já definido no critério do mercado
+    const AMOSTRA_MINIMA_GATE_RECORTE = 4; // ver comentário no Gate 9
+
     const semMarcarA = taxaCampo(formaA, 'jogos_sem_marcar_gol', 'jogos_considerados');
     const semMarcarB = taxaCampo(formaB, 'jogos_sem_marcar_gol', 'jogos_considerados');
     const semSofrerA = taxaCampo(formaA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
     const semSofrerB = taxaCampo(formaB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
 
-    // Direção 1: Time A ataca mal E Time B defende bem -> A tende a ficar sem marcar.
+    // Direção 1 (geral): Time A ataca mal E Time B defende bem -> A tende a ficar sem marcar.
     const riscoA = semMarcarA != null && semSofrerB != null &&
       semMarcarA >= LIMIAR_0_5 && semSofrerB >= LIMIAR_0_5;
-    // Direção 2: Time B ataca mal E Time A defende bem -> B tende a ficar sem marcar.
+    // Direção 2 (geral): Time B ataca mal E Time A defende bem -> B tende a ficar sem marcar.
     const riscoB = semMarcarB != null && semSofrerA != null &&
       semMarcarB >= LIMIAR_0_5 && semSofrerA >= LIMIAR_0_5;
 
-    if (riscoA || riscoB) {
-      const motivo = riscoA
-        ? `Time A sem marcar em ${(semMarcarA * 100).toFixed(0)}% dos jogos recentes contra Time B sem sofrer em ${(semSofrerB * 100).toFixed(0)}%`
-        : `Time B sem marcar em ${(semMarcarB * 100).toFixed(0)}% dos jogos recentes contra Time A sem sofrer em ${(semSofrerA * 100).toFixed(0)}%`;
+    // Direções equivalentes, agora no recorte de mando real do jogo.
+    let riscoARecorte = false, riscoBRecorte = false;
+    let semMarcarMandanteA = null, semSofrerVisitanteB = null, semMarcarVisitanteB = null, semSofrerMandanteA = null;
+    if (!dadosReais.modo_copa) {
+      const mandanteA = formaA?.como_mandante;
+      const visitanteB = formaB?.como_visitante;
+      semMarcarMandanteA = taxaCampo(mandanteA, 'jogos_sem_marcar_gol', 'jogos_considerados');
+      semSofrerMandanteA = taxaCampo(mandanteA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+      semMarcarVisitanteB = taxaCampo(visitanteB, 'jogos_sem_marcar_gol', 'jogos_considerados');
+      semSofrerVisitanteB = taxaCampo(visitanteB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+      const amostraMandanteA = mandanteA?.jogos_considerados;
+      const amostraVisitanteB = visitanteB?.jogos_considerados;
+      const amostraOk = amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE;
+
+      riscoARecorte = amostraOk && semMarcarMandanteA != null && semSofrerVisitanteB != null &&
+        semMarcarMandanteA >= LIMIAR_0_5 && semSofrerVisitanteB >= LIMIAR_0_5;
+      riscoBRecorte = amostraOk && semMarcarVisitanteB != null && semSofrerMandanteA != null &&
+        semMarcarVisitanteB >= LIMIAR_0_5 && semSofrerMandanteA >= LIMIAR_0_5;
+    }
+
+    if (riscoA || riscoB || riscoARecorte || riscoBRecorte) {
+      const partes = [];
+      if (riscoA) partes.push(`Time A sem marcar em ${(semMarcarA * 100).toFixed(0)}% (geral) contra Time B sem sofrer em ${(semSofrerB * 100).toFixed(0)}% (geral)`);
+      if (riscoB) partes.push(`Time B sem marcar em ${(semMarcarB * 100).toFixed(0)}% (geral) contra Time A sem sofrer em ${(semSofrerA * 100).toFixed(0)}% (geral)`);
+      if (riscoARecorte) partes.push(`Time A sem marcar em ${(semMarcarMandanteA * 100).toFixed(0)}% como mandante contra Time B sem sofrer em ${(semSofrerVisitanteB * 100).toFixed(0)}% como visitante`);
+      if (riscoBRecorte) partes.push(`Time B sem marcar em ${(semMarcarVisitanteB * 100).toFixed(0)}% como visitante contra Time A sem sofrer em ${(semSofrerMandanteA * 100).toFixed(0)}% como mandante`);
       result.aprovado = false;
       result.score = Math.min(result.score, min - 1);
       result.alertas = [
         ...(result.alertas || []),
-        `[Enforcement automático] Perfil de risco de 0x0: ${motivo} — combinação que o próprio critério do mercado já manda reduzir/reprovar. Aprovação da IA foi revertida pelo código — Gate 10.`,
+        `[Enforcement automático] Perfil de risco de 0x0: ${partes.join('; ')} — combinação que o próprio critério do mercado já manda reduzir/reprovar. Aprovação da IA foi revertida pelo código — Gate 10.`,
       ];
     }
   }
@@ -734,6 +800,55 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
         ...(result.alertas || []),
         `[Enforcement automático] Média combinada pode estar mascarando um lado fraco: ${partes.join(' e ')} — abaixo de ${LIMIAR_INDIVIDUAL_ESCANTEIOS}, mesmo que a média combinada dos dois times clareie o threshold de 9.5. Aprovação da IA foi revertida pelo código — Gate 17.`,
       ];
+    }
+  }
+
+  // Gate 18 — precedente de H2H mais recente/relevante contradizendo
+  // diretamente o critério central, pros mercados de 1º tempo. Caso real
+  // que motivou isso: Vancouver FC x York United, mercado -2.5 Gols 1T. O
+  // histórico geral (10 jogos, 100% de taxa de 1T baixo) sustentou a
+  // aprovação, mas o confronto direto MAIS RECENTE com o MESMO MANDO do
+  // jogo analisado (Vancouver em casa, 285 dias atrás) terminou 2-1 no 1T
+  // — 3 gols, quebrando direto o critério. A própria IA identificou isso
+  // no texto do alerta ("É o dado H2H mais relevante e deve ser pesado com
+  // atenção") e aprovou mesmo assim, porque no fim das contas é ela quem
+  // pondera holisticamente entre "10 jogos dizendo uma coisa" e "1 H2H
+  // dizendo outra" — e nesse caso ponderou errado. Esse gate não deixa
+  // isso na mão do julgamento holístico: se o H2H mais recente E mais
+  // relevante (mesmo mando, dentro de 730 dias) contradiz o critério
+  // central do mercado, reprova, ponto — sem "mas o geral diz outra
+  // coisa" pesando contra.
+  //
+  // "confrontos_diretos" já vem ordenado do mais recente pro mais antigo
+  // (ver h2hResumido em footballData.js), então o primeiro item que bate
+  // mesmo_mando_atual + tem placar_1t + está dentro de 730 dias É o mais
+  // recente/relevante por definição — não precisa reordenar.
+  if (mercado === '-2.5 Gols 1T' || mercado === '+0.5 Gols 1T') {
+    const h2h = dadosReais.confrontos_diretos || [];
+    const maisRecenteMesmoMando = h2h.find(j =>
+      j.mesmo_mando_atual === true &&
+      j.placar_1t &&
+      j.dias_atras != null && j.dias_atras < 730
+    );
+
+    if (maisRecenteMesmoMando) {
+      const partes = String(maisRecenteMesmoMando.placar_1t).split('-').map(s => parseInt(s, 10));
+      if (partes.length === 2 && Number.isFinite(partes[0]) && Number.isFinite(partes[1])) {
+        const totalGols1T = partes[0] + partes[1];
+        const contradiz = mercado === '-2.5 Gols 1T' ? totalGols1T >= 3 : totalGols1T === 0;
+
+        if (contradiz) {
+          const explicacao = mercado === '-2.5 Gols 1T'
+            ? `precisa de no máximo 2 gols no 1T, mas teve ${totalGols1T}`
+            : `precisa de pelo menos 1 gol no 1T, mas terminou 0-0`;
+          result.aprovado = false;
+          result.score = Math.min(result.score, min - 1);
+          result.alertas = [
+            ...(result.alertas || []),
+            `[Enforcement automático] O confronto direto mais recente com o mesmo mando de campo (${maisRecenteMesmoMando.dias_atras} dias atrás: ${maisRecenteMesmoMando.casa} ${maisRecenteMesmoMando.placar_1t} ${maisRecenteMesmoMando.fora} no 1T) contradiz diretamente o critério do mercado — ${explicacao}. Esse é o precedente mais específico disponível pra esse confronto; sozinho já é motivo de reprovação, independente do que a média geral (10 jogos) indicar. Aprovação da IA foi revertida pelo código — Gate 18.`,
+          ];
+        }
+      }
     }
   }
 }
