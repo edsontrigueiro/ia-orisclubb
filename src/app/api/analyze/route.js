@@ -106,7 +106,7 @@ const CRITERIOS_MERCADO = {
 
   '+1.5 Gols': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Over 1.5 Gols (jogo termina com 2 gols ou mais, total):
 - Só aprove se a soma das médias de gols marcados dos dois times for >= 2.6 — margem de segurança sobre a linha de 1.5.
-- Verifique "jogos_sem_marcar_gol" dos dois times: se AMBOS tiverem taxa alta (>= 25% dos jogos recentes sem marcar), isso é sinal de risco real de jogo com 1 gol ou menos, mesmo com média geral ok — reduza o score.
+- Verifique "jogos_sem_marcar_gol" de CADA time individualmente: se QUALQUER UM dos dois tiver taxa alta (>= 25% dos jogos recentes sem marcar), já é sinal de risco real de jogo com 1 gol ou menos — reduza o score, mesmo que o outro time tenha 0% de jogos sem marcar. NÃO trate o outro time marcar sempre como "mitigador" desse risco: pra esse mercado falhar (total <= 1), basta UM dos dois lados ficar sem marcar e o outro marcar só 1 — não é preciso os dois secarem juntos. Se AMBOS tiverem taxa alta simultaneamente, o risco é ainda maior — reduza mais.
 - Em "confrontos_diretos", a média de gols totais por jogo nos H2H recentes (dias_atras < 730) deve reforçar a tendência — se os confrontos diretos específicos tiverem sido de poucos gols, isso pesa contra, mesmo com boas médias gerais de cada time isolado.
 - Exija amostra mínima de 8 jogos disputados na temporada/forma recente para AMBOS os times.`,
 
@@ -241,7 +241,7 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
     result.score = Math.min(result.score, min - 1);
     result.alertas = [
       ...(result.alertas || []),
-      `[Enforcement automático] Amostra geral insuficiente (mínimo ${AMOSTRA_MINIMA_GERAL} jogos) — Time A: ${amostraGeralA ?? 'sem dado'}, Time B: ${amostraGeralB ?? 'sem dado'}. Aprovação da IA foi revertida pelo código.`,
+      `[Enforcement automático] Amostra geral insuficiente (mínimo ${AMOSTRA_MINIMA_GERAL} jogos) — Time A: ${amostraGeralA ?? 'sem dado'}, Time B: ${amostraGeralB ?? 'sem dado'}. Aprovação da IA foi revertida pelo código — Gate 1.`,
     ];
     return;
   }
@@ -317,14 +317,20 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // aplicar piso de amostra num recorte que a regra manda nem usar.
   const DIVERGENCIA_MAXIMA_TAXA = 0.20; // 20 pontos percentuais
 
-  // Taxa de "jogos sem marcar" — usada como proxy geral de risco ofensivo do
-  // recorte, pra comparar se a amostra pequena de forma_recente e a amostra
-  // maior de estatisticas_time_a/b apontam na MESMA direção. Retorna null se
-  // não der pra calcular (bloco ausente ou sem jogos válidos).
-  function taxaSemMarcar(bloco, campoAmostra) {
+  // Taxa genérica de qualquer campo de contagem sobre uma amostra — usada
+  // pra "jogos_sem_marcar_gol" (Gates 4, 9, 10, 11) e "jogos_sem_sofrer_gol"
+  // (Gates 10, 11, 12). Retorna null se não der pra calcular (bloco ausente,
+  // amostra ausente/zero, ou campo de contagem ausente).
+  function taxaCampo(bloco, campoContagem, campoAmostra) {
     const amostra = bloco?.[campoAmostra];
-    if (bloco == null || amostra == null || amostra === 0 || bloco.jogos_sem_marcar_gol == null) return null;
-    return bloco.jogos_sem_marcar_gol / amostra;
+    const contagem = bloco?.[campoContagem];
+    if (bloco == null || amostra == null || amostra === 0 || contagem == null) return null;
+    return contagem / amostra;
+  }
+  // Mantido como wrapper — Gates 4 e 9 já chamam taxaSemMarcar(bloco, campoAmostra)
+  // diretamente, sem precisar saber do campoContagem genérico.
+  function taxaSemMarcar(bloco, campoAmostra) {
+    return taxaCampo(bloco, 'jogos_sem_marcar_gol', campoAmostra);
   }
 
   if (!dadosReais.modo_copa) {
@@ -455,6 +461,139 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
           `[Enforcement automático] O mercado real (via Match Winner 1X2, de-vigado) precifica esse resultado em ${probRelevante.toFixed(1)}% de probabilidade, bem abaixo do mínimo de confiança exigido pra esse mercado (${min}%) — divergência de ${divergencia.toFixed(1)}pp. Aprovação da IA foi revertida pelo código — Gate 8.`,
         ];
       }
+    }
+  }
+
+  // Gate 9 — risco assimétrico de "time sem marcar" pro mercado +1.5 Gols.
+  // O texto do critério em CRITERIOS_MERCADO['+1.5 Gols'] pedia (antes desta
+  // correção) que AMBOS os times tivessem taxa alta de "jogos_sem_marcar_gol"
+  // antes de reduzir o score — mas pra um mercado de total >= 2 gols, basta
+  // UM dos dois lados falhar em marcar pra abrir caminho a um resultado de
+  // 0 ou 1 gol total (0x0, 1x0, 0x1). Foi exatamente esse buraco que
+  // aprovou o sinal Leiknir x Grotta: só o Leiknir tinha taxa alta (40% em
+  // 10 jogos), o Grotta tinha 0%, e a IA tratou o 0% do Grotta como
+  // "mitigador" do risco do Leiknir no texto do alerta — raciocínio que não
+  // se sustenta, porque Grotta marcar não impede o placar de fechar 1x0 ou
+  // 0x1. O texto do prompt já foi corrigido acima, mas seguindo o mesmo
+  // racional de todos os outros gates desta função (instrução de texto
+  // sozinha não garante comportamento — ver comentário no topo do arquivo),
+  // este gate reforça em código, sem depender da IA aplicar a instrução
+  // certo toda vez.
+  // Usa "jogos_sem_marcar_gol" do recorte GERAL (forma_recente_time_a/b),
+  // o mesmo campo citado no critério do mercado — não o recorte mando/
+  // visitante (esse já tem amostra mínima própria garantida pelo Gate 4).
+  if (mercado === '+1.5 Gols') {
+    const LIMIAR_SEM_MARCAR = 0.25; // mesmo threshold já definido no critério do mercado
+    const taxaSemMarcarA = taxaSemMarcar(formaA, 'jogos_considerados');
+    const taxaSemMarcarB = taxaSemMarcar(formaB, 'jogos_considerados');
+
+    const timeARisco = taxaSemMarcarA != null && taxaSemMarcarA >= LIMIAR_SEM_MARCAR;
+    const timeBRisco = taxaSemMarcarB != null && taxaSemMarcarB >= LIMIAR_SEM_MARCAR;
+
+    if (timeARisco || timeBRisco) {
+      const partes = [];
+      if (timeARisco) partes.push(`Time A sem marcar em ${(taxaSemMarcarA * 100).toFixed(0)}% dos jogos recentes`);
+      if (timeBRisco) partes.push(`Time B sem marcar em ${(taxaSemMarcarB * 100).toFixed(0)}% dos jogos recentes`);
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] Risco assimétrico de jogo com poucos gols: ${partes.join(' e ')} — suficiente pra ameaçar o Over 1.5 mesmo sem o outro time também ter taxa alta de jogos sem marcar (basta um lado falhar em marcar pra abrir caminho a 0x0, 1x0 ou 0x1). Aprovação da IA foi revertida pelo código — Gate 9.`,
+      ];
+    }
+  }
+
+  // Gate 10 — perfil de risco de 0x0 pro mercado +0.5 Gols. O critério do
+  // mercado (CRITERIOS_MERCADO['+0.5 Gols']) já pede o texto certo: reprovar
+  // se, em QUALQUER uma das duas direções, um time tiver ataque fraco
+  // (jogos_sem_marcar_gol alto) contra um adversário de defesa sólida
+  // (jogos_sem_sofrer_gol alto do outro lado) — essa combinação específica é
+  // o perfil estatístico de jogo que termina 0x0. A lógica do texto já
+  // estava certa (é um "casal" de condições ligado por OR entre as duas
+  // direções, não um erro de AMBOS como o do Gate 9) — mas, como todo outro
+  // gate desta função, texto sozinho não garante que a IA aplica em toda
+  // chamada. Reforça em código pra fechar essa brecha antes que ela vire
+  // red, igual foi feito pro +1.5 Gols.
+  if (mercado === '+0.5 Gols') {
+    const LIMIAR_0_5 = 0.25; // mesmo threshold já definido no critério do mercado
+    const semMarcarA = taxaCampo(formaA, 'jogos_sem_marcar_gol', 'jogos_considerados');
+    const semMarcarB = taxaCampo(formaB, 'jogos_sem_marcar_gol', 'jogos_considerados');
+    const semSofrerA = taxaCampo(formaA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+    const semSofrerB = taxaCampo(formaB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+
+    // Direção 1: Time A ataca mal E Time B defende bem -> A tende a ficar sem marcar.
+    const riscoA = semMarcarA != null && semSofrerB != null &&
+      semMarcarA >= LIMIAR_0_5 && semSofrerB >= LIMIAR_0_5;
+    // Direção 2: Time B ataca mal E Time A defende bem -> B tende a ficar sem marcar.
+    const riscoB = semMarcarB != null && semSofrerA != null &&
+      semMarcarB >= LIMIAR_0_5 && semSofrerA >= LIMIAR_0_5;
+
+    if (riscoA || riscoB) {
+      const motivo = riscoA
+        ? `Time A sem marcar em ${(semMarcarA * 100).toFixed(0)}% dos jogos recentes contra Time B sem sofrer em ${(semSofrerB * 100).toFixed(0)}%`
+        : `Time B sem marcar em ${(semMarcarB * 100).toFixed(0)}% dos jogos recentes contra Time A sem sofrer em ${(semSofrerA * 100).toFixed(0)}%`;
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] Perfil de risco de 0x0: ${motivo} — combinação que o próprio critério do mercado já manda reduzir/reprovar. Aprovação da IA foi revertida pelo código — Gate 10.`,
+      ];
+    }
+  }
+
+  // Gate 11 — condição mínima obrigatória pro mercado BTTS Não. O critério
+  // exige que exista PELO MENOS UM dos quatro sinais possíveis (ataque fraco
+  // de A ou B, ou defesa sólida de A ou B) antes de aprovar — sem nenhum
+  // deles, "não existe motivo estatístico real pra um dos lados ficar a
+  // zero" (texto do próprio critério). Mesmo racional dos outros gates:
+  // essa é uma condição NECESSÁRIA (não suficiente sozinha) que precisa ser
+  // garantida em código, não só pedida em texto.
+  if (mercado === 'BTTS Não') {
+    const LIMIAR_BTTS = 0.30; // mesmo threshold já definido no critério do mercado
+    const semMarcarA = taxaCampo(formaA, 'jogos_sem_marcar_gol', 'jogos_considerados');
+    const semMarcarB = taxaCampo(formaB, 'jogos_sem_marcar_gol', 'jogos_considerados');
+    const semSofrerA = taxaCampo(formaA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+    const semSofrerB = taxaCampo(formaB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+
+    const temSinal =
+      (semMarcarA != null && semMarcarA >= LIMIAR_BTTS) ||
+      (semMarcarB != null && semMarcarB >= LIMIAR_BTTS) ||
+      (semSofrerA != null && semSofrerA >= LIMIAR_BTTS) ||
+      (semSofrerB != null && semSofrerB >= LIMIAR_BTTS);
+
+    if (!temSinal) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] Nenhum dos dois times mostra sinal estatístico mínimo de possível 0x0 lado a lado (ataque fraco >= ${LIMIAR_BTTS * 100}% ou defesa sólida >= ${LIMIAR_BTTS * 100}%, em nenhum dos quatro cruzamentos). Sem esse sinal, não há base estatística real pra aprovar BTTS Não, segundo o próprio critério do mercado. Aprovação da IA foi revertida pelo código — Gate 11.`,
+      ];
+    }
+  }
+
+  // Gate 12 — condição mínima obrigatória pro mercado Under 3.5 Gols. O
+  // critério exige que PELO MENOS UM dos dois times tenha taxa de "jogos
+  // sem sofrer gol" >= 25% — capacidade defensiva real demonstrada em pelo
+  // menos um lado, não só médias de gols marcados baixas (que podem ser
+  // fruto de ataques fracos, não de defesas boas, e não sustentam Under
+  // sozinhas com a mesma força). Mesma lógica dos outros gates: condição
+  // necessária, garantida em código.
+  if (mercado === 'Under 3.5 Gols') {
+    const LIMIAR_U35 = 0.25; // mesmo threshold já definido no critério do mercado
+    const semSofrerA = taxaCampo(formaA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+    const semSofrerB = taxaCampo(formaB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
+
+    const temDefesaSolida =
+      (semSofrerA != null && semSofrerA >= LIMIAR_U35) ||
+      (semSofrerB != null && semSofrerB >= LIMIAR_U35);
+
+    if (!temDefesaSolida) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] Nenhum dos dois times tem taxa de jogos sem sofrer gol >= ${LIMIAR_U35 * 100}% — sem capacidade defensiva real demonstrada em pelo menos um dos lados, não há base estatística pra confiar em Under 3.5 Gols. Aprovação da IA foi revertida pelo código — Gate 12.`,
+      ];
     }
   }
 }
