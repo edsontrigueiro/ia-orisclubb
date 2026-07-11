@@ -125,9 +125,10 @@ const CRITERIOS_MERCADO = {
 - Competições eliminatórias / mata-mata (decisão, copa, playoff) têm motivação anormal e mais risco de zebra — se a "liga" indicada nos dados for desse tipo, reduza o score mesmo com favoritismo claro nas médias.`,
 
   'Lay Empate': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Lay Empate (o jogo não pode terminar em X):
-- Só aprove se a soma das médias de gols marcados dos dois times for >= 2.4. Jogos com tendência ofensiva clara empatam menos.
-- Nos confrontos diretos disponíveis (até 10), no máximo 2 podem ter terminado empatados. 3+ empates no H2H é sinal forte de que esse confronto específico tende ao empate — reprove.
-- Prefira confrontos com diferença de qualidade clara (favorito x zebra). Jogos historicamente equilibrados entre os mesmos dois times tendem a empate; isso deve reduzir o score mesmo se a soma de gols for alta.
+- Só aprove se a soma das médias de gols marcados dos dois times for >= 2.4. Jogos com tendência ofensiva clara empatam menos. Esse cálculo é reconferido em código depois da sua resposta (Gate 15) — se a soma real não bater, a aprovação é revertida automaticamente, então calcule certo.
+- Nos confrontos diretos disponíveis (até 10), no máximo 2 podem ter terminado empatados. 3+ empates no H2H é sinal forte de que esse confronto específico tende ao empate — reprove. Essa contagem também é reconferida em código (Gate 16).
+- Prefira confrontos com diferença de qualidade clara (favorito x zebra). Jogos historicamente equilibrados entre os mesmos dois times tendem a empate; isso deve reduzir o score mesmo se a soma de gols for alta. Se o campo "classificacao" estiver presente (posição/saldo de gols na tabela), use-o como sinal adicional de diferença de qualidade — mesma lógica do critério de "Dupla Chance": diferença de 8+ posições ou saldo de gols de 15+ é diferença clara de qualidade, mesmo com médias de gols parecidas.
+- Se "modo_copa" for true (torneio internacional / mata-mata), tenha cautela extra: jogos eliminatórios tendem a ter postura mais conservadora dos dois lados (às vezes o empate até interessa por regra de agregado), o que aumenta o risco de empate independentemente da diferença de qualidade entre os times — mencione isso no "insight" quando aplicável, reduzindo a confiança.
 - Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times.`,
 
   'Under 3.5 Gols': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Under 3.5 Gols (jogo total com 3 gols ou menos):
@@ -162,7 +163,7 @@ const CRITERIOS_MERCADO = {
 
   '+8.5 Escanteios': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Over 8.5 Escanteios (total de escanteios do jogo, dos dois times somados, mínimo 9):
 - Os dados trazem "escanteios" dentro de "forma_recente_time_a/b" — é a média de escanteios TOTAIS (dos dois lados, não só desse time) nos jogos recentes em que esse time jogou. Se "escanteios" for null, ou se "jogos_considerados" dentro dele for bem menor que os 10 jogos buscados, a API não tem esse dado disponível pra boa parte desses jogos — cobertura de escanteio é tipicamente mais pobre que cobertura de gol, e MUITO mais pobre em jogos de seleção nacional (amistosos, eliminatórias) do que em ligas de clube europeias. Isso é uma limitação conhecida da fonte de dado, não uma falha — diga isso explicitamente no insight quando acontecer ("cobertura de escanteios é tipicamente mais pobre em jogos de seleção"), em vez de tratar como erro genérico. Reprove mesmo assim por dado insuficiente, mas com essa explicação específica.
-- Calcule a média combinada: (escanteios_time_a + escanteios_time_b) / 2. Só aprove se essa média combinada for >= 9.5 — margem de segurança sobre a linha de 8.5.
+- Calcule a média combinada: (escanteios_time_a + escanteios_time_b) / 2. Só aprove se essa média combinada for >= 9.5 — margem de segurança sobre a linha de 8.5. ATENÇÃO: essa média combinada pode esconder um time com histórico de poucos escanteios sendo puxado pra cima só pelo número do adversário — se QUALQUER um dos dois times, isoladamente, tiver média própria bem abaixo da combinada (ex: um em 6, outro em 13, média 9.5 "passa" mas o time fraco pesa contra), reduza o score mesmo com a combinada aprovada. Isso é reconferido em código (Gate 17) com um piso mínimo por time — se algum dos dois vier muito baixo isoladamente, a aprovação é revertida automaticamente.
 - Se "escanteios_h2h" estiver disponível (confrontos diretos específicos entre esses dois times), dê peso MAIOR a ele do que à média geral de cada time separado — é o dado mais específico que existe pra esse confronto. Se "escanteios_h2h.media_escanteios" for visivelmente menor que a média combinada geral, reduza o score.
 - Escanteio é um dado mais "ruidoso" que gol (varia mais jogo a jogo) — seja mais conservador aqui do que seria em mercados de gols com números parecidos. Exija amostra mínima de 8 jogos com dado de escanteio disponível pra AMBOS os times. Esse mercado tende a ser mais confiável em ligas de clube do que em jogos de seleção, justamente por causa da cobertura de dado.`,
 };
@@ -593,6 +594,145 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
       result.alertas = [
         ...(result.alertas || []),
         `[Enforcement automático] Nenhum dos dois times tem taxa de jogos sem sofrer gol >= ${LIMIAR_U35 * 100}% — sem capacidade defensiva real demonstrada em pelo menos um dos lados, não há base estatística pra confiar em Under 3.5 Gols. Aprovação da IA foi revertida pelo código — Gate 12.`,
+      ];
+    }
+  }
+
+  // ── Gates 13-17: mesma lógica dos Gates 9-12, agora fechando os 3
+  // mercados que tinham ZERO enforcement determinístico no critério
+  // central (Lay 2x2, Dupla Chance, Lay Empate), mais o mascaramento de
+  // média combinada em Escanteios. Até aqui, esses 3 mercados dependiam
+  // 100% da IA aplicar o texto certo — a mesma classe de risco que já
+  // gerou o red do Gate 9, só que ainda sem ter caído o caso que expõe.
+
+  // Gate 13 — precedente de placar exato 2-2 no H2H pro mercado Lay 2x2.
+  // O critério já pede pra reprovar "mesmo com bom perfil geral" quando
+  // isso ocorre — reconfere em código porque é um dado objetivo (placar
+  // exato, já vem pronto em "confrontos_diretos"), não uma questão de
+  // julgamento que devesse ficar só com a IA.
+  if (mercado === 'Lay 2x2') {
+    const h2h = dadosReais.confrontos_diretos || [];
+    const precedente2x2 = h2h.find(j => {
+      if (j.dias_atras == null || j.dias_atras >= 730) return false;
+      const partes = String(j.placar || '').split('-').map(s => parseInt(s, 10));
+      return partes.length === 2 && Number.isFinite(partes[0]) && Number.isFinite(partes[1]) &&
+        partes[0] === 2 && partes[1] === 2;
+    });
+    if (precedente2x2) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] Precedente direto de 2-2 no H2H recente (${precedente2x2.dias_atras} dias atrás: ${precedente2x2.casa} ${precedente2x2.placar} ${precedente2x2.fora}) — o próprio critério do mercado manda reduzir bastante o score nesse caso, mesmo com bom perfil geral. Aprovação da IA foi revertida pelo código — Gate 13.`,
+      ];
+    }
+  }
+
+  // Gate 14 — contagem de derrotas do favorito no H2H pro mercado Dupla
+  // Chance. O critério exige no máximo 1 derrota do favorito nos
+  // confrontos diretos disponíveis; 2+ é "sinal de zebra recorrente" e
+  // deve reprovar. Reconfere em código porque envolve cruzar 3 campos
+  // (placar, mesmo_mando_atual, lado_aprovado) — exatamente o tipo de
+  // aritmética que é fácil a IA errar silenciosamente numa resposta livre.
+  if (mercado === 'Dupla Chance') {
+    const favorito = result.lado_aprovado === '1X' ? 'A' : (result.lado_aprovado === 'X2' ? 'B' : null);
+    if (favorito) {
+      const h2h = dadosReais.confrontos_diretos || [];
+      let derrotas = 0;
+      const detalhes = [];
+      for (const j of h2h) {
+        const partes = String(j.placar || '').split('-').map(s => parseInt(s, 10));
+        if (partes.length !== 2 || !Number.isFinite(partes[0]) || !Number.isFinite(partes[1])) continue;
+        const [golsCasa, golsFora] = partes;
+        const timeCasa = j.mesmo_mando_atual ? 'A' : 'B';
+        const timeFora = j.mesmo_mando_atual ? 'B' : 'A';
+        const vencedor = golsCasa > golsFora ? timeCasa : (golsCasa < golsFora ? timeFora : null);
+        if (vencedor && vencedor !== favorito) {
+          derrotas++;
+          detalhes.push(`${j.casa} ${j.placar} ${j.fora}`);
+        }
+      }
+      if (derrotas >= 2) {
+        result.aprovado = false;
+        result.score = Math.min(result.score, min - 1);
+        result.alertas = [
+          ...(result.alertas || []),
+          `[Enforcement automático] Favorito (Time ${favorito}, lado aprovado "${result.lado_aprovado}") tem ${derrotas} derrota(s) nos confrontos diretos disponíveis — ${detalhes.join('; ')}. Sinal de zebra recorrente que o próprio critério do mercado manda reduzir fortemente. Aprovação da IA foi revertida pelo código — Gate 14.`,
+        ];
+      }
+    }
+  }
+
+  // Gate 15 — soma das médias de gols marcados pro mercado Lay Empate. O
+  // critério exige soma >= 2.4; reconfere em código pra não depender da
+  // IA fazer a soma certo (mesmo princípio do Gate 9 pro +1.5 Gols, que
+  // também tem exigência de soma mínima).
+  if (mercado === 'Lay Empate') {
+    const mediaA = formaA?.media_gols_marcados ?? null;
+    const mediaB = formaB?.media_gols_marcados ?? null;
+    if (mediaA != null && mediaB != null) {
+      const soma = mediaA + mediaB;
+      if (soma < 2.4) {
+        result.aprovado = false;
+        result.score = Math.min(result.score, min - 1);
+        result.alertas = [
+          ...(result.alertas || []),
+          `[Enforcement automático] Soma das médias de gols marcados (${soma.toFixed(2)}) abaixo do mínimo exigido pelo critério do mercado (2.4). Aprovação da IA foi revertida pelo código — Gate 15.`,
+        ];
+      }
+    }
+
+    // Gate 16 — contagem de empates no H2H, mesmo mercado (Lay Empate). O
+    // critério permite no máximo 2 empates nos confrontos diretos
+    // disponíveis; 3+ é sinal forte de tendência ao empate NESSE confronto
+    // específico e deve reprovar, mesmo com boa soma de gols.
+    const h2h = dadosReais.confrontos_diretos || [];
+    let empates = 0;
+    for (const j of h2h) {
+      const partes = String(j.placar || '').split('-').map(s => parseInt(s, 10));
+      if (partes.length === 2 && Number.isFinite(partes[0]) && Number.isFinite(partes[1]) && partes[0] === partes[1]) {
+        empates++;
+      }
+    }
+    if (empates >= 3) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] ${empates} empates nos confrontos diretos disponíveis — sinal forte de tendência ao empate nesse confronto específico, acima do máximo permitido pelo critério do mercado (2). Aprovação da IA foi revertida pelo código — Gate 16.`,
+      ];
+    }
+  }
+
+  // Gate 17 — mascaramento de média combinada pro mercado +8.5 Escanteios.
+  // O critério exige (escanteios_time_a + escanteios_time_b)/2 >= 9.5, mas
+  // essa média combinada pode esconder um time cujo próprio histórico de
+  // escanteios é consistentemente baixo, puxado pra cima só pelo número do
+  // adversário — mesmo tipo de mascaramento que o Gate 9 corrigiu pra
+  // gols, aqui aplicado a escanteios. Usa dado que JÁ existe (cada time já
+  // tem seu "escanteios.media_escanteios" próprio, calculado separadamente
+  // em forma_recente_time_a/b) — não precisa de nenhuma chamada de API
+  // nova. O piso de 7.5 é um valor de partida razoável (proporcional ao
+  // threshold combinado de 9.5), não um número calibrado com dado real —
+  // ajustar depois de acumular amostra suficiente pelo protocolo de
+  // calibração de sempre.
+  if (mercado === '+8.5 Escanteios') {
+    const LIMIAR_INDIVIDUAL_ESCANTEIOS = 7.5; // valor de partida, não calibrado ainda
+    const mediaEscA = formaA?.escanteios?.media_escanteios ?? null;
+    const mediaEscB = formaB?.escanteios?.media_escanteios ?? null;
+
+    const riscoA = mediaEscA != null && mediaEscA < LIMIAR_INDIVIDUAL_ESCANTEIOS;
+    const riscoB = mediaEscB != null && mediaEscB < LIMIAR_INDIVIDUAL_ESCANTEIOS;
+
+    if (riscoA || riscoB) {
+      const partes = [];
+      if (riscoA) partes.push(`Time A com média própria de ${mediaEscA} escanteios/jogo`);
+      if (riscoB) partes.push(`Time B com média própria de ${mediaEscB} escanteios/jogo`);
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] Média combinada pode estar mascarando um lado fraco: ${partes.join(' e ')} — abaixo de ${LIMIAR_INDIVIDUAL_ESCANTEIOS}, mesmo que a média combinada dos dois times clareie o threshold de 9.5. Aprovação da IA foi revertida pelo código — Gate 17.`,
       ];
     }
   }
