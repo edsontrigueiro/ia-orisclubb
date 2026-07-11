@@ -828,6 +828,12 @@ async function registrarHistoricoAnalise(userId, jogo, mercado, result, min, dad
     crosscheck_temporada_ausente: result._sinaisQualidade?.crosscheck_temporada_ausente ?? null,
     h2h_fraco: result._sinaisQualidade?.h2h_fraco ?? null,
     sinais_fracos_count: result._sinaisQualidade?.sinais_fracos_count ?? null,
+    // Snapshot do dado bruto usado nessa análise — ver comentário na
+    // migration_dados_reais_snapshot.sql / schema.sql. dadosReais aqui já
+    // é o objeto enxuto (sem _jogos_recentes_brutos, removido em
+    // footballData.js antes de chegar aqui), o mesmo que foi pro prompt da
+    // IA — não uma cópia maior/diferente.
+    dados_reais_snapshot: dadosReais || null,
   });
   if (error) throw error;
 }
