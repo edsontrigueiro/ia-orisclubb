@@ -704,10 +704,13 @@ export async function getFootballData(jogo, opts = {}) {
   // pedido via incluirEscanteios (preview de estatísticas).
   const precisaEscanteios = incluirEscanteios ?? (mercado === '+8.5 Escanteios');
 
-  // Classificação só faz sentido pro mercado que usa "favorito claro" como
-  // critério central, e só quando os dois times estão comprovadamente na
-  // mesma liga+temporada (senão a comparação de posição não significa nada).
-  const precisaClassificacao = mercado === 'Dupla Chance' && leagueIdA && leagueIdA === leagueIdB && seasonA === seasonB;
+  // Classificação faz sentido pros mercados que usam "favorito claro"/
+  // "diferença de qualidade" como critério (Dupla Chance e, desde a adição
+  // do Gate 15/16, também Lay Empate), e só quando os dois times estão
+  // comprovadamente na mesma liga+temporada (senão a comparação de posição
+  // não significa nada).
+  const precisaClassificacao = (mercado === 'Dupla Chance' || mercado === 'Lay Empate') &&
+    leagueIdA && leagueIdA === leagueIdB && seasonA === seasonB;
 
   const [h2h, statsA, statsB, formaA, formaB, fixtureFuturo, classificacao] = await Promise.all([
     buscarHeadToHead(idA, idB, headers),
@@ -810,8 +813,9 @@ export async function getFootballData(jogo, opts = {}) {
     liga_time_a: proximoJogoA?.league?.name || null,
     liga_time_b: proximoJogoB?.league?.name || null,
     // Posição/pontos/saldo na tabela — null salvo quando mercado é "Dupla
-    // Chance" E os dois times estão comprovadamente na mesma liga+temporada
-    // (ver buscarClassificacao). Reforça o critério de "favorito claro" com
+    // Chance" ou "Lay Empate" E os dois times estão comprovadamente na
+    // mesma liga+temporada (ver buscarClassificacao/precisaClassificacao).
+    // Reforça o critério de "favorito claro"/"diferença de qualidade" com
     // um dado que médias de gols sozinhas não capturam: eficiência em jogos
     // decisivos, não só volume.
     classificacao,
