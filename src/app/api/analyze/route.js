@@ -209,10 +209,15 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   result._sinaisQualidade = {
     match_exato_a: dadosReais.match_exato_a ?? null,
     match_exato_b: dadosReais.match_exato_b ?? null,
+    // odd_real_ausente continua calculado e salvo como metadado informativo
+    // (útil pra calibração/relatório histórico), mas — por instrução
+    // explícita do Edson — PAROU de contar pra sinais_fracos_count/Gate 2.
+    // A odd (presente ou ausente) não deve influenciar aprovação/reprovação
+    // em nenhuma medida, nem indiretamente via qualidade de dado.
     odd_real_ausente: oddAusenteFlag,
     crosscheck_temporada_ausente: crossCheckTemporadaAusenteFlag,
     h2h_fraco: h2hFracoFlag,
-    sinais_fracos_count: [oddAusenteFlag, crossCheckTemporadaAusenteFlag, h2hFracoFlag, matchAproximadoFlag].filter(Boolean).length,
+    sinais_fracos_count: [crossCheckTemporadaAusenteFlag, h2hFracoFlag, matchAproximadoFlag].filter(Boolean).length,
   };
 
   // Gate 0 — se os DOIS times vieram de match aproximado (nenhum nome bateu
@@ -248,25 +253,29 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   }
 
   // Gate 2 — qualidade geral do dado, vale pra TODOS os mercados, não só
-  // 1º tempo. Não depende de saber o nome da liga: mede 4 sinais que ficam
+  // 1º tempo. Não depende de saber o nome da liga: mede 3 sinais que ficam
   // fracos automaticamente em ligas de cobertura pior (2ª/3ª divisão, ligas
   // novas/pequenas), sem precisar manter lista nenhuma de liga proibida.
-  // Se 2 ou mais desses 4 sinais vierem fracos juntos, reprova — porque é
-  // exatamente essa combinação (sem odd real + sem cross-check de temporada
-  // + H2H velho/vazio) que apareceu nos 4 reds recentes, todos em ligas
-  // menores (Ykkönen, Superettan, Torneo A, liga canadense).
-  // 4º sinal: identificação de time NÃO foi por nome exato (caiu pro
+  // Se 2 ou mais desses 3 sinais vierem fracos juntos, reprova.
+  // Originalmente eram 4 sinais (incluindo odd real ausente) — por
+  // instrução explícita do Edson, a odd parou de contar aqui (e em
+  // qualquer outro lugar do sistema): odd ausente ou presente não deve
+  // influenciar aprovação/reprovação em nenhuma medida. O campo
+  // "odd_real_ausente" continua calculado e salvo em result._sinaisQualidade
+  // só como metadado informativo pra relatório/calibração histórica, fora
+  // da contagem que decide o Gate.
+  // 3º sinal: identificação de time NÃO foi por nome exato (caiu pro
   // primeiro resultado de busca por relevância da API) — risco real de
   // estarmos olhando o time errado, o que torna TODOS os outros dados
-  // (forma, H2H, odds) potencialmente inválidos, não só "fracos".
-  const { odd_real_ausente: oddAusente, crosscheck_temporada_ausente: crossCheckTemporadaAusente, h2h_fraco: h2hFraco, sinais_fracos_count: sinaisFracos } = result._sinaisQualidade;
+  // (forma, H2H) potencialmente inválidos, não só "fracos".
+  const { crosscheck_temporada_ausente: crossCheckTemporadaAusente, h2h_fraco: h2hFraco, sinais_fracos_count: sinaisFracos } = result._sinaisQualidade;
   const matchTimeAproximado = dadosReais.match_exato_a === false || dadosReais.match_exato_b === false;
   if (sinaisFracos >= 2) {
     result.aprovado = false;
     result.score = Math.min(result.score, min - 1);
     result.alertas = [
       ...(result.alertas || []),
-      `[Enforcement automático] Qualidade geral de dado insuficiente pra essa competição — odd real ${oddAusente ? 'ausente' : 'disponível'}, estatística de temporada ${crossCheckTemporadaAusente ? 'ausente' : 'disponível'}, H2H ${h2hFraco ? 'vazio ou só com jogos com mais de 2 anos' : 'ok'}, identificação de time ${matchTimeAproximado ? 'NÃO foi exata (risco de time errado)' : 'exata'}. Aprovação da IA foi revertida pelo código — Gate 2.`,
+      `[Enforcement automático] Qualidade geral de dado insuficiente pra essa competição — estatística de temporada ${crossCheckTemporadaAusente ? 'ausente' : 'disponível'}, H2H ${h2hFraco ? 'vazio ou só com jogos com mais de 2 anos' : 'ok'}, identificação de time ${matchTimeAproximado ? 'NÃO foi exata (risco de time errado)' : 'exata'}. Aprovação da IA foi revertida pelo código — Gate 2.`,
     ];
     return;
   }
@@ -1215,7 +1224,7 @@ function montarSystemPrompt() {
 7. Os dados trazem duas fontes de estatística por time: "estatisticas_time_a/b" (presa à competição/temporada do próximo jogo do time) e "forma_recente_time_a/b" (últimos jogos do time em qualquer competição). Se "estatisticas_time_a/b" tiver amostra pequena (jogos_disputados <= 2) ou estiver nula, use "forma_recente_time_a/b" como base principal da análise — ela tem mais jogos de apoio e reflete melhor o nível atual do time. Cite explicitamente qual das duas fontes você usou e por quê.
 8. Convenção do confronto: no formato "Time A vs Time B", Time A é o mandante (joga em casa) e Time B é o visitante nesse jogo específico. "forma_recente_time_a/b" traz subcampos "como_mandante" e "como_visitante" — priorize "como_mandante" do Time A e "como_visitante" do Time B sobre a média geral misturada, pois mando de campo é um efeito real no futebol. "estatisticas_time_a/b" (quando disponível) TAMBÉM traz seus próprios "como_mandante"/"como_visitante" — é uma segunda fonte, presa à temporada atual, mas com amostra geralmente maior. Use as duas como cross-check: se ambas apontam na mesma direção, isso reforça a confiança; se divergem bastante, mencione isso no "insight" em vez de ignorar a discrepância. Quando o recorte de mando de "forma_recente" tiver amostra pequena (poucos jogos em casa ou fora nos últimos 10), dê peso extra ao de "estatisticas_time_a/b" se a amostra dele for maior. Em "confrontos_diretos", dê mais peso aos jogos com "mesmo_mando_atual": true (mesmo mando de campo do confronto atual) do que aos com mando invertido. Se "ultimos_5" divergir muito de "ultimos_10"/geral (ex: time que vinha bem mas piorou nos últimos 5, ou vice-versa), trate isso como mudança de momento e mencione explicitamente no "insight" — não ignore a tendência recente em favor só da média.
 9. Em "confrontos_diretos", cada item já vem com "dias_atras" calculado. Pese MUITO mais os confrontos com menos de ~365 dias do que os mais antigos — times mudam de elenco, técnico e nível de um ano pro outro, então um 5-0 de 3 anos atrás não diz quase nada sobre o jogo de hoje. Se a maioria dos confrontos diretos disponíveis tiver mais de 2 anos (730 dias), trate o H2H como pouco confiável e diga isso no "insight", em vez de usá-lo com o mesmo peso de um H2H recente.
-10. Se "odds_mercado_real" estiver presente, é a odd cotada por casas de apostas (via API-Football, média entre casas) pra esse confronto — trate como referência informativa pro trader, NÃO como a odd real com que a operação trabalha. Compare com a "probabilidade_real" que você calculou só pra efeito de comentário: se sua probabilidade implica uma odd "justa" bem menor que a odd cotada (ex: você calcula 85% de chance, que equivale a odd justa ~1.18, mas a odd cotada é 1.35), isso é sinal de valor — mencione no "resumo". Se a odd cotada estiver MENOR do que sua probabilidade justificaria, isso é sinal de que o mercado está "caro" pra esse lado — também mencione. IMPORTANTE: isso é só comentário operacional pro trader decidir se vale a pena pela relação risco/retorno — a odd JAMAIS deve influenciar o "score" pra cima ou pra baixo, nem a decisão de "aprovado". Aprovação e score dependem só dos critérios estatísticos do mercado (forma, H2H, amostra); a odd é informação separada, adicionada depois, sem peso na nota. Use o campo "odds_estimada" pra sua própria estimativa de qualquer forma; quando "odds_mercado_real" existir, cite o número real explicitamente no "insight" também, não só o seu.
+10. Se "odds_mercado_real" estiver presente, é a odd cotada por casas de apostas (via API-Football, média entre casas) pra esse confronto — ela JÁ é exibida separadamente pro trader na interface, como referência informativa, fora do que você escreve. Por instrução explícita do Edson: a odd NÃO deve aparecer em NENHUMA parte da sua análise — não em "criterios_atendidos", não em "criterios_nao_atendidos", não em "alertas", não no "insight", não no "resumo". Não julgue se a odd está "cara", "comprimida", "com valor" ou "com risco/retorno desfavorável" — não é seu papel avaliar isso, e não deve influenciar o "score" nem a decisão de "aprovado" em nenhuma medida, nem mesmo como comentário à parte. Aprovação e score dependem SÓ dos critérios estatísticos do mercado (forma, H2H, amostra). Ignore completamente o campo "odds_mercado_real" na hora de escrever sua resposta — ele existe nos dados só pra uso de outra parte do sistema, não pra você comentar. Preencha "odds_estimada" normalmente com sua própria estimativa de odd justa a partir da sua "probabilidade_real" (isso é independente e não é sobre o mercado real).
 11. Se "modo_copa" for true, esse confronto é de uma competição de copa/mata-mata (Copa do Mundo, Libertadores, Champions, Copa do Brasil, etc.), e isso muda o que conta como "dado insuficiente":
     - "confrontos_diretos_indisponivel": true em modo copa é NORMAL — times de chaves/grupos/confederações diferentes raramente ou nunca se enfrentaram antes. NÃO reduza o score só por isso, como faria numa liga doméstica. Só penalize H2H ausente se outras fontes de dado TAMBÉM estiverem fracas.
     - "estatisticas_time_a/b" com amostra pequena (poucos jogos NESSA edição específica do torneio) também é normal, principalmente em fases iniciais. Em modo copa, prefira SEMPRE "forma_recente_time_a/b" como base principal, com confiança normal — não trate a ausência de estatística "presa ao torneio" como um problema a mais.
