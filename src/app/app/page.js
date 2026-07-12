@@ -861,6 +861,22 @@ export default function App() {
                       </div>
                     </div>
 
+                    {/* Alertas — existiam nos dados desde sempre (result.alertas, usado
+                        na hora de salvar o sinal), mas nunca eram exibidos NESSA tela —
+                        só apareciam depois, na tela de histórico. Isso incluía todo alerta
+                        de "[Enforcement automático]" gerado pelos Gates 0-22, ou seja: toda
+                        vez que um gate reprovava um sinal, o motivo ficava invisível pro
+                        trader no momento exato da decisão de pegar ou passar. */}
+                    {!!(result.alertas || []).length && (
+                      <div style={{background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,borderRadius:'12px',padding:'14px 16px',position:'relative',overflow:'hidden'}}>
+                        <div style={{position:'absolute',top:0,left:0,right:0,height:'1.5px',background:`linear-gradient(90deg,${C.orange},${C.orangeGlow})`}}/>
+                        <div style={{fontSize:'10px',fontWeight:700,color:C.orange,letterSpacing:'1.5px',textTransform:'uppercase',marginBottom:'8px'}}>⚠ Alertas da IA</div>
+                        <ul style={{margin:0,paddingLeft:'18px',color:C.text,fontSize:'13px',lineHeight:1.75}}>
+                          {result.alertas.map((a, i) => <li key={i} style={{marginBottom: i < result.alertas.length - 1 ? '6px' : 0}}>{a}</li>)}
+                        </ul>
+                      </div>
+                    )}
+
                     {/* Resumo */}
                     <div style={{background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,borderRadius:'12px',padding:'14px 16px',position:'relative',overflow:'hidden'}}>
                       <div style={{position:'absolute',top:0,left:0,right:0,height:'1.5px',background:`linear-gradient(90deg,${C.orange},${C.orangeGlow})`}}/>
