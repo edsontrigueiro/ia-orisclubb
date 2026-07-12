@@ -388,6 +388,37 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
     }
   }
 
+  // Helper reutilizado pelos Gates 9-12 — mesma exigência de convergência
+  // que o Gate 4 já aplica, generalizada. Caso real que motivou isso: Gais
+  // x Elfsborg (+0.5 Gols), onde o Gate 10 reprovou empilhando dois sinais
+  // de amostra pequena (Elfsborg 25% sem marcar como visitante em 4 jogos;
+  // Gais 60% sem sofrer como mandante em 5 jogos) sem nunca checar se
+  // algum dos dois convergia com a temporada inteira — o Gate 4, alguns
+  // gates acima, JÁ fazia essa checagem pro seu próprio critério, mas os
+  // Gates 9-12 foram escritos depois com uma exigência mais fraca (só
+  // olhavam o limiar do recorte, não pediam confirmação cruzada).
+  //
+  // Regra: um sinal de risco baseado em recorte pequeno (mando/visitante)
+  // só é aceito nos Gates 9-12 se:
+  // (a) não existir dado de temporada nesse mesmo recorte com amostra
+  //     suficiente (> AMOSTRA_MINIMA_RECORTE) pra CONTRADIZER — nesse caso,
+  //     não tem como saber se diverge, então o sinal do recorte segue
+  //     valendo sozinho; OU
+  // (b) existir dado de temporada com amostra suficiente E ele CONCORDAR
+  //     (diferença <= DIVERGENCIA_MAXIMA_TAXA, 20pp) com o recorte recente.
+  // Se a temporada existir, tiver amostra suficiente, E divergir — o sinal
+  // do recorte pequeno é descartado (retorna false), mesmo que bata o
+  // limiar do gate. Não é "ausência de confirmação penaliza"; é
+  // "presença de CONTRADIÇÃO invalida".
+  function recorteConfiavel(taxaRecorte, statsBloco, campoContagem, campoAmostraSeason) {
+    if (taxaRecorte == null) return false;
+    const amostraSeason = statsBloco?.[campoAmostraSeason] ?? 0;
+    if (amostraSeason <= AMOSTRA_MINIMA_RECORTE) return true; // sem 2ª fonte suficiente pra contradizer
+    const taxaSeason = taxaCampo(statsBloco, campoContagem, campoAmostraSeason);
+    if (taxaSeason == null) return true;
+    return Math.abs(taxaSeason - taxaRecorte) <= DIVERGENCIA_MAXIMA_TAXA;
+  }
+
   // Gate 5 — amostra específica de escanteios, só pro mercado +8.5
   // Escanteios. Cobertura de escanteio na API-Football é mais pobre que
   // cobertura de gol (depende de endpoint separado por partida, ver
@@ -407,30 +438,28 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
     }
   }
 
-  // Gate 7 — de-vig de odds reais. Só roda quando "probabilidade_devigada"
-  // veio calculada (ver buscarOddsReais em footballData.js — exige odd do
-  // complemento cotada, nem toda casa lista os dois lados). Cobre só os 5
-  // mercados de duas pontas puras (Over/Under, BTTS); Dupla Chance e Lay
-  // Empate ficam de fora por ora — Double Chance é mercado de 3 saídas
-  // sobrepostas, de-vig correto exigiria o mercado Match Winner (1X2) à
-  // parte, não implementado ainda.
-  // Racional: o mercado de apostas agrega a opinião de milhares de
-  // apostadores e ajustes de linha em tempo real — é a única fonte de
-  // sinal do sistema que é EXTERNA aos próprios dados que alimentam a IA.
-  // Se a odd de-vigada implica uma probabilidade bem abaixo do mínimo de
-  // confiança exigido pra esse mercado, o mercado está "discordando" da
-  // aprovação, possivelmente com base em informação que os dados de forma/
-  // H2H não capturam (lesão, desfalque, mando trocado por decisão da CBF).
-  const DIVERGENCIA_ODDS_MAXIMA = 15; // pontos percentuais
+  // Gate 7 — de-vig de odds reais. NÃO BLOQUEANTE desde [data desta edição]:
+  // por instrução explícita do Edson, a odd que vem da API-Football não é a
+  // odd real com que a operação trabalha (é só referência/exibição) — não
+  // deve interferir na aprovação/reprovação de nenhum sinal. Mantido como
+  // alerta informativo (mesmo padrão do Gate 6, correlação de exposição):
+  // ainda calcula a divergência e avisa no alerta, útil como contexto pro
+  // trader, mas NUNCA mexe em result.aprovado ou result.score.
+  //
+  // Só roda quando "probabilidade_devigada" veio calculada (ver
+  // buscarOddsReais em footballData.js — exige odd do complemento cotada,
+  // nem toda casa lista os dois lados). Cobre só os 5 mercados de duas
+  // pontas puras (Over/Under, BTTS); Dupla Chance e Lay Empate ficam de
+  // fora por ora — Double Chance é mercado de 3 saídas sobrepostas, de-vig
+  // correto exigiria o mercado Match Winner (1X2) à parte (ver Gate 8).
+  const DIVERGENCIA_ODDS_MAXIMA = 15; // pontos percentuais — só usado pro texto do alerta agora, não reprova mais
   const probDevigada = dadosReais.odds_mercado_real?.probabilidade_devigada;
   if (probDevigada != null) {
     const divergencia = min - probDevigada;
     if (divergencia > DIVERGENCIA_ODDS_MAXIMA) {
-      result.aprovado = false;
-      result.score = Math.min(result.score, min - 1);
       result.alertas = [
         ...(result.alertas || []),
-        `[Enforcement automático] O mercado real de apostas precifica esse resultado em ${probDevigada}% de probabilidade (odd de-vigada, margem da casa removida), bem abaixo do mínimo de confiança exigido pra esse mercado (${min}%) — divergência de ${divergencia.toFixed(1)}pp. Aprovação da IA foi revertida pelo código — Gate 7.`,
+        `[Informativo — não bloqueante] O mercado real de apostas precifica esse resultado em ${probDevigada}% de probabilidade (odd de-vigada, margem da casa removida), abaixo do mínimo de confiança exigido pra esse mercado (${min}%) — divergência de ${divergencia.toFixed(1)}pp. Isso NÃO afeta a aprovação (odd é só referência, não a odd real de operação) — Gate 7.`,
       ];
     }
   }
@@ -442,6 +471,9 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // Pra Dupla Chance, precisa saber qual lado a IA aprovou (lado_aprovado)
   // pra somar a probabilidade certa — por isso só roda AQUI, depois da IA
   // já ter respondido, nunca antes.
+  //
+  // Também NÃO BLOQUEANTE — mesmo motivo do Gate 7 (instrução explícita do
+  // Edson).
   if (dadosReais.odds_1x2_devigada) {
     const { prob_devigada_home, prob_devigada_draw, prob_devigada_away } = dadosReais.odds_1x2_devigada;
     let probRelevante = null;
@@ -455,11 +487,9 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
     if (probRelevante != null) {
       const divergencia = min - probRelevante;
       if (divergencia > DIVERGENCIA_ODDS_MAXIMA) {
-        result.aprovado = false;
-        result.score = Math.min(result.score, min - 1);
         result.alertas = [
           ...(result.alertas || []),
-          `[Enforcement automático] O mercado real (via Match Winner 1X2, de-vigado) precifica esse resultado em ${probRelevante.toFixed(1)}% de probabilidade, bem abaixo do mínimo de confiança exigido pra esse mercado (${min}%) — divergência de ${divergencia.toFixed(1)}pp. Aprovação da IA foi revertida pelo código — Gate 8.`,
+          `[Informativo — não bloqueante] O mercado real (via Match Winner 1X2, de-vigado) precifica esse resultado em ${probRelevante.toFixed(1)}% de probabilidade, abaixo do mínimo de confiança exigido pra esse mercado (${min}%) — divergência de ${divergencia.toFixed(1)}pp. Isso NÃO afeta a aprovação (odd é só referência, não a odd real de operação) — Gate 8.`,
         ];
       }
     }
@@ -502,6 +532,14 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // calibrado com dado real — ajustar depois pelo protocolo de calibração
   // de sempre, se a experiência mostrar que n=4 gera falso-positivo demais.
   //
+  // Além do piso de amostra, exige convergência com a temporada inteira
+  // (helper recorteConfiavel, mesma exigência do Gate 4) antes de aceitar
+  // o risco do recorte sozinho — sem isso, dois sinais de amostra pequena
+  // discordando entre si (recorte recente vs temporada) podiam empilhar e
+  // reprovar sem nenhuma checagem cruzada. Foi exatamente esse buraco que
+  // pegou o sinal Gais x Elfsborg no mercado +0.5 Gols (Gate 10, mesma
+  // lógica) — corrigido aqui em conjunto.
+  //
   // Ignorado em modo_copa: mando de campo pode não refletir vantagem real
   // em sede neutra (mesma exceção já aplicada em todo o resto do arquivo).
   if (mercado === '+1.5 Gols') {
@@ -521,16 +559,18 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
       taxaVisitanteB = taxaCampo(visitanteB, 'jogos_sem_marcar_gol', 'jogos_considerados');
       const amostraMandanteA = mandanteA?.jogos_considerados;
       const amostraVisitanteB = visitanteB?.jogos_considerados;
-      timeARiscoRecorte = taxaMandanteA != null && amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && taxaMandanteA >= LIMIAR_SEM_MARCAR;
-      timeBRiscoRecorte = taxaVisitanteB != null && amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && taxaVisitanteB >= LIMIAR_SEM_MARCAR;
+      const confiavelA = recorteConfiavel(taxaMandanteA, dadosReais.estatisticas_time_a?.como_mandante, 'jogos_sem_marcar_gol', 'jogos_disputados');
+      const confiavelB = recorteConfiavel(taxaVisitanteB, dadosReais.estatisticas_time_b?.como_visitante, 'jogos_sem_marcar_gol', 'jogos_disputados');
+      timeARiscoRecorte = taxaMandanteA != null && amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && taxaMandanteA >= LIMIAR_SEM_MARCAR && confiavelA;
+      timeBRiscoRecorte = taxaVisitanteB != null && amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && taxaVisitanteB >= LIMIAR_SEM_MARCAR && confiavelB;
     }
 
     if (timeARisco || timeBRisco || timeARiscoRecorte || timeBRiscoRecorte) {
       const partes = [];
       if (timeARisco) partes.push(`Time A sem marcar em ${(taxaSemMarcarA * 100).toFixed(0)}% dos jogos recentes (geral)`);
       if (timeBRisco) partes.push(`Time B sem marcar em ${(taxaSemMarcarB * 100).toFixed(0)}% dos jogos recentes (geral)`);
-      if (timeARiscoRecorte) partes.push(`Time A sem marcar em ${(taxaMandanteA * 100).toFixed(0)}% dos jogos como mandante`);
-      if (timeBRiscoRecorte) partes.push(`Time B sem marcar em ${(taxaVisitanteB * 100).toFixed(0)}% dos jogos como visitante`);
+      if (timeARiscoRecorte) partes.push(`Time A sem marcar em ${(taxaMandanteA * 100).toFixed(0)}% dos jogos como mandante (confirmado pela temporada)`);
+      if (timeBRiscoRecorte) partes.push(`Time B sem marcar em ${(taxaVisitanteB * 100).toFixed(0)}% dos jogos como visitante (confirmado pela temporada)`);
       result.aprovado = false;
       result.score = Math.min(result.score, min - 1);
       result.alertas = [
@@ -557,6 +597,16 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // não só a taxa geral — pelo mesmo motivo (taxa geral dilui um recorte
   // de risco real dentro de uma amostra maior e mista). Ignorado em
   // modo_copa. Amostra mínima 4 pro recorte, mesma justificativa do Gate 9.
+  //
+  // Também exige convergência com a temporada inteira (recorteConfiavel)
+  // pra CADA UMA das duas taxas que compõem o "casal" de risco — não
+  // basta uma bater o limiar, ela precisa não ser contradita pela
+  // temporada. Caso real que expôs essa falta: Gais x Elfsborg. O Gate 10
+  // reprovou empilhando Elfsborg (25% sem marcar como visitante, n=4) com
+  // Gais (60% sem sofrer como mandante, n=5) — dois sinais isolados de
+  // amostra pequena, SEM checar se algum deles divergia da temporada
+  // inteira. O Gate 4 (mais acima nesse arquivo) já fazia essa checagem
+  // pro próprio critério dele; os Gates 9-12 não faziam a mesma exigência.
   if (mercado === '+0.5 Gols') {
     const LIMIAR_0_5 = 0.25; // mesmo threshold já definido no critério do mercado
     const AMOSTRA_MINIMA_GATE_RECORTE = 4; // ver comentário no Gate 9
@@ -587,18 +637,27 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
       const amostraVisitanteB = visitanteB?.jogos_considerados;
       const amostraOk = amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE;
 
+      const statsMandanteA = dadosReais.estatisticas_time_a?.como_mandante;
+      const statsVisitanteB = dadosReais.estatisticas_time_b?.como_visitante;
+      const confiavelSemMarcarMandanteA = recorteConfiavel(semMarcarMandanteA, statsMandanteA, 'jogos_sem_marcar_gol', 'jogos_disputados');
+      const confiavelSemSofrerMandanteA = recorteConfiavel(semSofrerMandanteA, statsMandanteA, 'jogos_sem_sofrer_gol', 'jogos_disputados');
+      const confiavelSemMarcarVisitanteB = recorteConfiavel(semMarcarVisitanteB, statsVisitanteB, 'jogos_sem_marcar_gol', 'jogos_disputados');
+      const confiavelSemSofrerVisitanteB = recorteConfiavel(semSofrerVisitanteB, statsVisitanteB, 'jogos_sem_sofrer_gol', 'jogos_disputados');
+
       riscoARecorte = amostraOk && semMarcarMandanteA != null && semSofrerVisitanteB != null &&
-        semMarcarMandanteA >= LIMIAR_0_5 && semSofrerVisitanteB >= LIMIAR_0_5;
+        semMarcarMandanteA >= LIMIAR_0_5 && semSofrerVisitanteB >= LIMIAR_0_5 &&
+        confiavelSemMarcarMandanteA && confiavelSemSofrerVisitanteB;
       riscoBRecorte = amostraOk && semMarcarVisitanteB != null && semSofrerMandanteA != null &&
-        semMarcarVisitanteB >= LIMIAR_0_5 && semSofrerMandanteA >= LIMIAR_0_5;
+        semMarcarVisitanteB >= LIMIAR_0_5 && semSofrerMandanteA >= LIMIAR_0_5 &&
+        confiavelSemMarcarVisitanteB && confiavelSemSofrerMandanteA;
     }
 
     if (riscoA || riscoB || riscoARecorte || riscoBRecorte) {
       const partes = [];
       if (riscoA) partes.push(`Time A sem marcar em ${(semMarcarA * 100).toFixed(0)}% (geral) contra Time B sem sofrer em ${(semSofrerB * 100).toFixed(0)}% (geral)`);
       if (riscoB) partes.push(`Time B sem marcar em ${(semMarcarB * 100).toFixed(0)}% (geral) contra Time A sem sofrer em ${(semSofrerA * 100).toFixed(0)}% (geral)`);
-      if (riscoARecorte) partes.push(`Time A sem marcar em ${(semMarcarMandanteA * 100).toFixed(0)}% como mandante contra Time B sem sofrer em ${(semSofrerVisitanteB * 100).toFixed(0)}% como visitante`);
-      if (riscoBRecorte) partes.push(`Time B sem marcar em ${(semMarcarVisitanteB * 100).toFixed(0)}% como visitante contra Time A sem sofrer em ${(semSofrerMandanteA * 100).toFixed(0)}% como mandante`);
+      if (riscoARecorte) partes.push(`Time A sem marcar em ${(semMarcarMandanteA * 100).toFixed(0)}% como mandante contra Time B sem sofrer em ${(semSofrerVisitanteB * 100).toFixed(0)}% como visitante (ambos confirmados pela temporada)`);
+      if (riscoBRecorte) partes.push(`Time B sem marcar em ${(semMarcarVisitanteB * 100).toFixed(0)}% como visitante contra Time A sem sofrer em ${(semSofrerMandanteA * 100).toFixed(0)}% como mandante (ambos confirmados pela temporada)`);
       result.aprovado = false;
       result.score = Math.min(result.score, min - 1);
       result.alertas = [
@@ -625,6 +684,13 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // — errar pro lado de reprovar aprovação legítima é tão ruim quanto
   // errar pro lado de aprovar risco real. Amostra mínima 4 pro recorte,
   // mesma justificativa do Gate 9. Ignorado em modo_copa.
+  //
+  // Exige convergência com a temporada (recorteConfiavel) antes de aceitar
+  // o sinal do recorte como base válida — mesmo aqui, onde o recorte está
+  // sendo usado pra JUSTIFICAR aprovação (não pra reprovar): um sinal
+  // pequeno contradito pela temporada não deveria "salvar" uma aprovação
+  // com a mesma força que um sinal confirmado salvaria. Consistência com
+  // os Gates 9/10.
   if (mercado === 'BTTS Não') {
     const LIMIAR_BTTS = 0.30; // mesmo threshold já definido no critério do mercado
     const AMOSTRA_MINIMA_GATE_RECORTE = 4; // ver comentário no Gate 9
@@ -645,11 +711,18 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
       const semSofrerMandanteA = taxaCampo(mandanteA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
       const semSofrerVisitanteB = taxaCampo(visitanteB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
 
+      const statsMandanteA = dadosReais.estatisticas_time_a?.como_mandante;
+      const statsVisitanteB = dadosReais.estatisticas_time_b?.como_visitante;
+
       temSinalRecorte =
-        (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semMarcarMandanteA != null && semMarcarMandanteA >= LIMIAR_BTTS) ||
-        (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semMarcarVisitanteB != null && semMarcarVisitanteB >= LIMIAR_BTTS) ||
-        (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerMandanteA != null && semSofrerMandanteA >= LIMIAR_BTTS) ||
-        (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerVisitanteB != null && semSofrerVisitanteB >= LIMIAR_BTTS);
+        (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semMarcarMandanteA != null && semMarcarMandanteA >= LIMIAR_BTTS &&
+          recorteConfiavel(semMarcarMandanteA, statsMandanteA, 'jogos_sem_marcar_gol', 'jogos_disputados')) ||
+        (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semMarcarVisitanteB != null && semMarcarVisitanteB >= LIMIAR_BTTS &&
+          recorteConfiavel(semMarcarVisitanteB, statsVisitanteB, 'jogos_sem_marcar_gol', 'jogos_disputados')) ||
+        (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerMandanteA != null && semSofrerMandanteA >= LIMIAR_BTTS &&
+          recorteConfiavel(semSofrerMandanteA, statsMandanteA, 'jogos_sem_sofrer_gol', 'jogos_disputados')) ||
+        (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerVisitanteB != null && semSofrerVisitanteB >= LIMIAR_BTTS &&
+          recorteConfiavel(semSofrerVisitanteB, statsVisitanteB, 'jogos_sem_sofrer_gol', 'jogos_disputados'));
     }
 
     const temSinal =
@@ -679,7 +752,8 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   //
   // Mesma extensão do Gate 11: também aceita o recorte mando/visitante
   // como fonte válida de sinal (defesa sólida do Time A como mandante ou
-  // do Time B como visitante), não só a taxa geral.
+  // do Time B como visitante), não só a taxa geral — exigindo convergência
+  // com a temporada (recorteConfiavel), mesma consistência.
   if (mercado === 'Under 3.5 Gols') {
     const LIMIAR_U35 = 0.25; // mesmo threshold já definido no critério do mercado
     const AMOSTRA_MINIMA_GATE_RECORTE = 4; // ver comentário no Gate 9
@@ -696,9 +770,14 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
       const semSofrerMandanteA = taxaCampo(mandanteA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
       const semSofrerVisitanteB = taxaCampo(visitanteB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
 
+      const statsMandanteA = dadosReais.estatisticas_time_a?.como_mandante;
+      const statsVisitanteB = dadosReais.estatisticas_time_b?.como_visitante;
+
       temDefesaSolidaRecorte =
-        (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerMandanteA != null && semSofrerMandanteA >= LIMIAR_U35) ||
-        (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerVisitanteB != null && semSofrerVisitanteB >= LIMIAR_U35);
+        (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerMandanteA != null && semSofrerMandanteA >= LIMIAR_U35 &&
+          recorteConfiavel(semSofrerMandanteA, statsMandanteA, 'jogos_sem_sofrer_gol', 'jogos_disputados')) ||
+        (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerVisitanteB != null && semSofrerVisitanteB >= LIMIAR_U35 &&
+          recorteConfiavel(semSofrerVisitanteB, statsVisitanteB, 'jogos_sem_sofrer_gol', 'jogos_disputados'));
     }
 
     const temDefesaSolida =
@@ -1136,7 +1215,7 @@ function montarSystemPrompt() {
 7. Os dados trazem duas fontes de estatística por time: "estatisticas_time_a/b" (presa à competição/temporada do próximo jogo do time) e "forma_recente_time_a/b" (últimos jogos do time em qualquer competição). Se "estatisticas_time_a/b" tiver amostra pequena (jogos_disputados <= 2) ou estiver nula, use "forma_recente_time_a/b" como base principal da análise — ela tem mais jogos de apoio e reflete melhor o nível atual do time. Cite explicitamente qual das duas fontes você usou e por quê.
 8. Convenção do confronto: no formato "Time A vs Time B", Time A é o mandante (joga em casa) e Time B é o visitante nesse jogo específico. "forma_recente_time_a/b" traz subcampos "como_mandante" e "como_visitante" — priorize "como_mandante" do Time A e "como_visitante" do Time B sobre a média geral misturada, pois mando de campo é um efeito real no futebol. "estatisticas_time_a/b" (quando disponível) TAMBÉM traz seus próprios "como_mandante"/"como_visitante" — é uma segunda fonte, presa à temporada atual, mas com amostra geralmente maior. Use as duas como cross-check: se ambas apontam na mesma direção, isso reforça a confiança; se divergem bastante, mencione isso no "insight" em vez de ignorar a discrepância. Quando o recorte de mando de "forma_recente" tiver amostra pequena (poucos jogos em casa ou fora nos últimos 10), dê peso extra ao de "estatisticas_time_a/b" se a amostra dele for maior. Em "confrontos_diretos", dê mais peso aos jogos com "mesmo_mando_atual": true (mesmo mando de campo do confronto atual) do que aos com mando invertido. Se "ultimos_5" divergir muito de "ultimos_10"/geral (ex: time que vinha bem mas piorou nos últimos 5, ou vice-versa), trate isso como mudança de momento e mencione explicitamente no "insight" — não ignore a tendência recente em favor só da média.
 9. Em "confrontos_diretos", cada item já vem com "dias_atras" calculado. Pese MUITO mais os confrontos com menos de ~365 dias do que os mais antigos — times mudam de elenco, técnico e nível de um ano pro outro, então um 5-0 de 3 anos atrás não diz quase nada sobre o jogo de hoje. Se a maioria dos confrontos diretos disponíveis tiver mais de 2 anos (730 dias), trate o H2H como pouco confiável e diga isso no "insight", em vez de usá-lo com o mesmo peso de um H2H recente.
-10. Se "odds_mercado_real" estiver presente, é a odd REAL cotada pelo mercado de apostas pra esse confronto específico (média entre casas) — não uma estimativa. Compare com a "probabilidade_real" que você calculou: se sua probabilidade implica uma odd "justa" bem menor que a odd real oferecida (ex: você calcula 85% de chance, que equivale a odd justa ~1.18, mas o mercado paga 1.35), isso é sinal de valor — mencione no "resumo". Se a odd real estiver MENOR do que sua probabilidade justificaria, isso é sinal de que o mercado está "caro" pra esse lado — também mencione. Use o campo "odds_estimada" pra sua própria estimativa de qualquer forma; quando "odds_mercado_real" existir, cite o número real explicitamente no "insight" também, não só o seu.
+10. Se "odds_mercado_real" estiver presente, é a odd cotada por casas de apostas (via API-Football, média entre casas) pra esse confronto — trate como referência informativa pro trader, NÃO como a odd real com que a operação trabalha. Compare com a "probabilidade_real" que você calculou só pra efeito de comentário: se sua probabilidade implica uma odd "justa" bem menor que a odd cotada (ex: você calcula 85% de chance, que equivale a odd justa ~1.18, mas a odd cotada é 1.35), isso é sinal de valor — mencione no "resumo". Se a odd cotada estiver MENOR do que sua probabilidade justificaria, isso é sinal de que o mercado está "caro" pra esse lado — também mencione. IMPORTANTE: isso é só comentário operacional pro trader decidir se vale a pena pela relação risco/retorno — a odd JAMAIS deve influenciar o "score" pra cima ou pra baixo, nem a decisão de "aprovado". Aprovação e score dependem só dos critérios estatísticos do mercado (forma, H2H, amostra); a odd é informação separada, adicionada depois, sem peso na nota. Use o campo "odds_estimada" pra sua própria estimativa de qualquer forma; quando "odds_mercado_real" existir, cite o número real explicitamente no "insight" também, não só o seu.
 11. Se "modo_copa" for true, esse confronto é de uma competição de copa/mata-mata (Copa do Mundo, Libertadores, Champions, Copa do Brasil, etc.), e isso muda o que conta como "dado insuficiente":
     - "confrontos_diretos_indisponivel": true em modo copa é NORMAL — times de chaves/grupos/confederações diferentes raramente ou nunca se enfrentaram antes. NÃO reduza o score só por isso, como faria numa liga doméstica. Só penalize H2H ausente se outras fontes de dado TAMBÉM estiverem fracas.
     - "estatisticas_time_a/b" com amostra pequena (poucos jogos NESSA edição específica do torneio) também é normal, principalmente em fases iniciais. Em modo copa, prefira SEMPRE "forma_recente_time_a/b" como base principal, com confiança normal — não trate a ausência de estatística "presa ao torneio" como um problema a mais.
