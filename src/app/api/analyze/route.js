@@ -106,7 +106,7 @@ const CRITERIOS_MERCADO = {
 - Exija amostra mínima de 8 jogos disputados na temporada/forma recente para AMBOS os times.`,
 
   '+1.5 Gols': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Over 1.5 Gols (jogo termina com 2 gols ou mais, total):
-- Só aprove se a soma das médias de gols marcados dos dois times for >= 3.0. O threshold antigo (2.6) implicava, sob modelo de Poisson, só ~73% de probabilidade de 2+ gols — bem abaixo do mínimo de 83 desse mercado, e a calibração real confirmou o subdesempenho exatamente nesse mercado. Soma 3.0-3.2 é o que sustenta ~82-84% de probabilidade real.
+- Só aprove se a soma das médias de gols marcados dos dois times for >= 3.0. O threshold antigo (2.6) implicava, sob modelo de Poisson, só ~73% de probabilidade de 2+ gols — bem abaixo do mínimo de 83 desse mercado, e a calibração real confirmou o subdesempenho exatamente nesse mercado. Soma 3.0-3.2 é o que sustenta ~82-84% de probabilidade real. Esse cálculo é reconferido em código depois da sua resposta (Gate 24) — se a soma real não bater, a aprovação é revertida automaticamente.
 - Considere também as médias de gols SOFRIDOS dos dois lados — dois ataques medianos contra duas defesas fracas produzem mais gols do que contra defesas sólidas. O campo "baseline_poisson" (Regra 16) já combina ataque e defesa dos dois times numa estimativa única — use-o como âncora.
 - Verifique "jogos_sem_marcar_gol" de CADA time individualmente: se QUALQUER UM dos dois tiver taxa alta (>= 25% dos jogos recentes sem marcar), já é sinal de risco real de jogo com 1 gol ou menos — reduza o score, mesmo que o outro time tenha 0% de jogos sem marcar. NÃO trate o outro time marcar sempre como "mitigador" desse risco: pra esse mercado falhar (total <= 1), basta UM dos dois lados ficar sem marcar e o outro marcar só 1 — não é preciso os dois secarem juntos. Se AMBOS tiverem taxa alta simultaneamente, o risco é ainda maior — reduza mais.
 - Em "confrontos_diretos", a média de gols totais por jogo nos H2H recentes (dias_atras < 730) deve reforçar a tendência — se os confrontos diretos específicos tiverem sido de poucos gols, isso pesa contra, mesmo com boas médias gerais de cada time isolado.
@@ -134,14 +134,14 @@ const CRITERIOS_MERCADO = {
 - Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times.`,
 
   'Under 3.5 Gols': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Under 3.5 Gols (jogo total com 3 gols ou menos):
-- Só aprove se a soma das médias de gols marcados dos dois times for <= 2.1. O threshold antigo (2.6) implicava, sob Poisson, só ~74% de probabilidade de 3 gols ou menos — abaixo do mínimo de 85 desse mercado. Soma <= 2.0-2.1 é o que sustenta ~85-86%.
+- Só aprove se a soma das médias de gols marcados dos dois times for <= 2.1. O threshold antigo (2.6) implicava, sob Poisson, só ~74% de probabilidade de 3 gols ou menos — abaixo do mínimo de 85 desse mercado. Soma <= 2.0-2.1 é o que sustenta ~85-86%. Esse cálculo é reconferido em código depois da sua resposta (Gate 25) — se a soma real não bater, a aprovação é revertida automaticamente.
 - Exija que pelo menos um dos dois times tenha taxa de "jogos sem sofrer gol" (clean sheets / jogos disputados) >= 25%. Isso indica capacidade defensiva real, não só sorte pontual.
 - Nos confrontos diretos disponíveis (até 10), a média de gols totais por jogo deve ser <= 3.0. Histórico de jogos com 4+ gols entre esses times específicos é motivo forte para reprovar, mesmo com médias de temporada baixas.
 - Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times.`,
 
   '-2.5 Gols 1T': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Under 2.5 Gols no PRIMEIRO TEMPO (total de gols dos dois times até o intervalo <= 2):
 - Esse mercado é especificamente sobre o 1º TEMPO, não o jogo todo. Use o subcampo "primeiro_tempo" dentro de "forma_recente_time_a/b" — ele já vem calculado a partir do placar real do intervalo de cada jogo, NÃO é estimado a partir da média do jogo inteiro. Se "primeiro_tempo" for null, a API não trouxe placar de intervalo pra esses jogos — isso é ESPERADO e comum em jogos de seleção nacional (amistosos, eliminatórias), onde a cobertura de dado é mais pobre que em ligas de clube europeias; diga isso explicitamente no insight ("cobertura de dado de 1º tempo é tipicamente mais pobre pra jogos de seleção") em vez de tratar como uma falha genérica qualquer. Reduza a confiança mesmo assim, mas tente usar "pct_jogos_1t_total_baixo" quando disponível.
-- "primeiro_tempo.pct_jogos_1t_total_baixo" de cada time é a métrica mais direta pra esse mercado: é o % dos jogos recentes desse time em que o total de gols no 1T (somando os dois lados) foi <= 2. Só aprove se os dois times tiverem esse percentual >= 60%.
+- "primeiro_tempo.pct_jogos_1t_total_baixo" de cada time é a métrica mais direta pra esse mercado: é o % dos jogos recentes desse time em que o total de gols no 1T (somando os dois lados) foi <= 2. Só aprove se os dois times tiverem esse percentual >= 75%. O threshold antigo (60%) estava ABAIXO da taxa base do evento (~85-88% dos jogos de futebol terminam o 1T com 2 gols ou menos) — ou seja, aprovava times notavelmente PIORES que a média pra esse mercado. Esse é um mercado estruturalmente favorável, então o papel do critério é EXCLUIR confrontos de risco elevado, não exigir perfil excepcional: um time abaixo de 75% é significativamente mais "movimentado" no 1T que a média e deve ser excluído.
 - "estatisticas_time_a/b.pct_gols_marcados_1t_temporada" e "pct_gols_sofridos_1t_temporada" são um SEGUNDO sinal pra esse mercado: % dos gols da TEMPORADA INTEIRA (marcados e sofridos) que saíram até o intervalo, com amostra muito maior que os ~10 jogos de "forma_recente". Se disponível (não-null), use como confirmação — percentual baixo aqui (~33% ou menos seria o "esperado" se gols fossem uniformes ao longo do jogo) reforça que esse time realmente "começa devagar" e não é só coincidência dos últimos jogos. Se esse percentual season for ALTO (time concentra gols no 1T historicamente) mas "pct_jogos_1t_total_baixo" recente for bom, há uma contradição — mencione isso e seja mais conservador.
 - PRIORIZE o "primeiro_tempo" DENTRO de "como_mandante" do Time A e "como_visitante" do Time B (não o "primeiro_tempo" geral, que mistura jogos em casa e fora) — mando de campo afeta o ritmo do 1º tempo igual afeta o jogo todo: um time pode começar devagar em casa e rápido fora, por exemplo. Use o geral só como reforço/comparação, não como fonte principal. EXCEÇÃO: se "modo_copa" for true (torneio internacional, possivelmente em sede neutra), esse recorte de mando pode não refletir uma vantagem/contexto real — nesse caso use o "primeiro_tempo" geral combinado.
 - Em "confrontos_diretos", use o campo "placar_1t" quando presente — H2H com 1T historicamente movimentado (2+ gols no intervalo) entre esses dois times específicos é motivo forte pra reprovar, mesmo com boas médias gerais.
@@ -155,7 +155,7 @@ const CRITERIOS_MERCADO = {
 - Exija amostra mínima de 8 jogos disputados na temporada/forma recente para AMBOS os times.`,
 
   '+0.5 Gols 1T': `CRITÉRIOS DE ALTA ASSERTIVIDADE — +0.5 Gols no PRIMEIRO TEMPO (pelo menos 1 gol no intervalo):
-- Use "primeiro_tempo.pct_jogos_1t_sem_gols" de cada time — é o % dos jogos recentes em que o 1T terminou 0x0. Só aprove se os DOIS times tiverem esse percentual <= 25% (ou seja, em pelo menos 75% dos jogos recentes de cada time houve gol antes do intervalo).
+- Use "primeiro_tempo.pct_jogos_1t_sem_gols" de cada time — é o % dos jogos recentes em que o 1T terminou 0x0. Só aprove se os DOIS times tiverem esse percentual <= 15% (ou seja, em pelo menos 85% dos jogos recentes de cada time houve gol antes do intervalo). O threshold antigo (25%) era praticamente igual à taxa base do evento (~25-30% dos jogos de futebol têm 1T 0x0) — não filtrava nada: aprovava perfil mediano num mercado cujo mínimo declarado é 85, que exige perfil EXCEPCIONAL de gols cedo (λ de 1º tempo ~1.9 combinado, contra ~1.1-1.2 típico). Esse mercado NÃO é estruturalmente favorável como o "-2.5 Gols 1T" — a taxa base de "pelo menos 1 gol no 1T" é ~72%, bem abaixo do mínimo de 85 — então só confrontos genuinamente excepcionais devem passar. Espere aprovar POUCO nesse mercado; isso é o comportamento correto.
 - "estatisticas_time_a/b.pct_gols_marcados_1t_temporada"/"pct_gols_sofridos_1t_temporada" são um segundo sinal, com amostra de TEMPORADA INTEIRA (bem maior que os ~10 jogos de "forma_recente"). Se disponível, percentual ALTO aqui (time concentra gols no 1T historicamente) reforça a aprovação; percentual baixo é sinal de alerta mesmo se os últimos jogos pareceram bons.
 - PRIORIZE o "primeiro_tempo" DENTRO de "como_mandante" do Time A e "como_visitante" do Time B (não o "primeiro_tempo" geral, que mistura casa e fora) — um time pode demorar a marcar fora mas começar rápido em casa, por exemplo. Use o geral só como reforço/comparação. EXCEÇÃO: se "modo_copa" for true, use o "primeiro_tempo" geral combinado, pelo mesmo motivo já explicado nos outros mercados (mando pode não ser real em sede neutra).
 - Se "primeiro_tempo" for null pra qualquer um dos dois times, mesma ressalva do mercado "-2.5 Gols 1T": é comum em jogos de seleção nacional, mas reduz a confiança — diga isso no insight.
@@ -1176,6 +1176,50 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
         ...(result.alertas || []),
         `[Enforcement automático] ${c.contradicoes} dos ${c.considerados} confrontos diretos recentes (últimos 2 anos) tiveram os dois times marcando (${c.exemplos.join('; ')}) — padrão recorrente de BTTS SIM nesse confronto específico, não caso isolado. Aprovação da IA foi revertida pelo código — Gate 22.`,
       ];
+    }
+  }
+
+  // ── Gates 24-25: enforcement determinístico das somas de médias de gols
+  // pros mercados +1.5 Gols e Under 3.5 Gols. Inconsistência criada pela
+  // própria rodada de recalibração de julho/2026: os thresholds novos
+  // (soma >= 3.0 e soma <= 2.1) foram atualizados no TEXTO do critério, mas
+  // só o Lay Empate tinha a soma reconferida em código (Gate 15) — os
+  // outros dois dependiam da IA aplicar o número certo toda vez, exatamente
+  // a classe de risco que motivou todos os outros gates deste arquivo
+  // (instrução de texto sozinha não garante comportamento). Mesma fonte de
+  // dado do Gate 15 (forma_recente geral), mesmo padrão de veto.
+
+  // Gate 24 — +1.5 Gols: soma das médias de gols marcados >= 3.0.
+  if (mercado === '+1.5 Gols') {
+    const mediaA = formaA?.media_gols_marcados ?? null;
+    const mediaB = formaB?.media_gols_marcados ?? null;
+    if (mediaA != null && mediaB != null) {
+      const soma = mediaA + mediaB;
+      if (soma < 3.0) {
+        result.aprovado = false;
+        result.score = Math.min(result.score, min - 1);
+        result.alertas = [
+          ...(result.alertas || []),
+          `[Enforcement automático] Soma das médias de gols marcados (${soma.toFixed(2)}) abaixo do mínimo exigido pelo critério do mercado (3.0) — sob Poisson, soma abaixo disso não sustenta os ${min}% de confiança exigidos pra Over 1.5. Aprovação da IA foi revertida pelo código — Gate 24.`,
+        ];
+      }
+    }
+  }
+
+  // Gate 25 — Under 3.5 Gols: soma das médias de gols marcados <= 2.1.
+  if (mercado === 'Under 3.5 Gols') {
+    const mediaA = formaA?.media_gols_marcados ?? null;
+    const mediaB = formaB?.media_gols_marcados ?? null;
+    if (mediaA != null && mediaB != null) {
+      const soma = mediaA + mediaB;
+      if (soma > 2.1) {
+        result.aprovado = false;
+        result.score = Math.min(result.score, min - 1);
+        result.alertas = [
+          ...(result.alertas || []),
+          `[Enforcement automático] Soma das médias de gols marcados (${soma.toFixed(2)}) acima do máximo permitido pelo critério do mercado (2.1) — sob Poisson, soma acima disso não sustenta os ${min}% de confiança exigidos pra Under 3.5. Aprovação da IA foi revertida pelo código — Gate 25.`,
+        ];
+      }
     }
   }
 
