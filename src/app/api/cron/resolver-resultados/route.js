@@ -69,15 +69,28 @@ export async function GET(request) {
         continue;
       }
 
-      const golsA = f.goals?.home ?? null;
-      const golsB = f.goals?.away ?? null;
+      // CORREÇÃO (auditoria jul/2026): mercados de aposta liquidam nos 90
+      // MINUTOS, mas em jogos decididos na prorrogação (AET) ou nos pênaltis
+      // (PEN) o campo "goals" da API-Football INCLUI os gols da prorrogação.
+      // Um mata-mata 0x0 no tempo normal que termina 1x0 na prorrogação era
+      // marcado green em "+0.5 Gols" quando a aposta real foi red — e cada
+      // resolução errada dessas envenena a calibração que decide os
+      // thresholds. "score.fulltime" é o placar ao fim dos 90 minutos, que é
+      // o que interessa; pra FT normal, goals e fulltime são idênticos.
+      const ehProrrogacao = status === 'AET' || status === 'PEN';
+      const golsA = ehProrrogacao ? (f.score?.fulltime?.home ?? null) : (f.goals?.home ?? null);
+      const golsB = ehProrrogacao ? (f.score?.fulltime?.away ?? null) : (f.goals?.away ?? null);
       const golsA1T = f.score?.halftime?.home ?? null;
       const golsB1T = f.score?.halftime?.away ?? null;
 
       // Escanteio vive num endpoint separado (por partida) — só busca
-      // quando o mercado da análise de fato precisa disso.
+      // quando o mercado da análise de fato precisa disso. Em jogo com
+      // prorrogação, o endpoint de estatísticas soma os escanteios dos 120
+      // minutos sem como separar os 90 regulamentares — resolver com esse
+      // número seria chutar. Deixa pendente (null) de propósito: melhor
+      // sem resultado do que com resultado errado na calibração.
       let corners = null;
-      if (analise.mercado === '+8.5 Escanteios') {
+      if (analise.mercado === '+8.5 Escanteios' && !ehProrrogacao) {
         corners = await buscarEscanteiosJogo(analise.fixture_id, headers);
       }
 
