@@ -9,6 +9,7 @@ import { getSupabaseAdmin } from '@/lib/supabase';
 import { getCached, setCached } from '@/lib/cache';
 import { fetchComRetry } from '@/lib/fetchUtil';
 import { getFootballData, logErro } from '@/lib/footballData';
+import { calcularBaselinePoisson } from '@/lib/poissonBaseline';
 
 // Cache de análises já feitas, TTL de 2h, pra não gastar chamada de
 // API-Football/Anthropic repetindo o mesmo confronto+mercado em sequência.
@@ -105,7 +106,8 @@ const CRITERIOS_MERCADO = {
 - Exija amostra mínima de 8 jogos disputados na temporada/forma recente para AMBOS os times.`,
 
   '+1.5 Gols': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Over 1.5 Gols (jogo termina com 2 gols ou mais, total):
-- Só aprove se a soma das médias de gols marcados dos dois times for >= 2.6 — margem de segurança sobre a linha de 1.5.
+- Só aprove se a soma das médias de gols marcados dos dois times for >= 3.0. O threshold antigo (2.6) implicava, sob modelo de Poisson, só ~73% de probabilidade de 2+ gols — bem abaixo do mínimo de 83 desse mercado, e a calibração real confirmou o subdesempenho exatamente nesse mercado. Soma 3.0-3.2 é o que sustenta ~82-84% de probabilidade real.
+- Considere também as médias de gols SOFRIDOS dos dois lados — dois ataques medianos contra duas defesas fracas produzem mais gols do que contra defesas sólidas. O campo "baseline_poisson" (Regra 16) já combina ataque e defesa dos dois times numa estimativa única — use-o como âncora.
 - Verifique "jogos_sem_marcar_gol" de CADA time individualmente: se QUALQUER UM dos dois tiver taxa alta (>= 25% dos jogos recentes sem marcar), já é sinal de risco real de jogo com 1 gol ou menos — reduza o score, mesmo que o outro time tenha 0% de jogos sem marcar. NÃO trate o outro time marcar sempre como "mitigador" desse risco: pra esse mercado falhar (total <= 1), basta UM dos dois lados ficar sem marcar e o outro marcar só 1 — não é preciso os dois secarem juntos. Se AMBOS tiverem taxa alta simultaneamente, o risco é ainda maior — reduza mais.
 - Em "confrontos_diretos", a média de gols totais por jogo nos H2H recentes (dias_atras < 730) deve reforçar a tendência — se os confrontos diretos específicos tiverem sido de poucos gols, isso pesa contra, mesmo com boas médias gerais de cada time isolado.
 - Exija amostra mínima de 8 jogos disputados na temporada/forma recente para AMBOS os times.`,
@@ -120,19 +122,19 @@ const CRITERIOS_MERCADO = {
 - Só aprove se houver diferença CLARA de qualidade entre os times nos dados: favorito com média de gols marcados >= 1.8 e média de gols sofridos <= 1.2; adversário com média de gols sofridos >= 1.5. Se as médias forem parecidas entre os dois times, isso é um jogo equilibrado — REPROVE, mesmo que um dos nomes "pareça" favorito.
 - Se o campo "classificacao" estiver presente, ele é um SEGUNDO caminho pra caracterizar favoritismo claro, independente do critério de médias de gols acima: diferença de 8+ posições na tabela, OU diferença de saldo de gols ("saldo_gols") de 15+, entre os dois times É por si só diferença clara de qualidade — mesmo que as médias de gols dos dois pareçam parecidas (isso acontece quando o favorito vence por eficiência em jogos decisivos, não por volume ofensivo). Nesse caso, pode aprovar mesmo sem o critério de médias acima ser satisfeito — mas cite os números de "classificacao" explicitamente no "insight" como o motivo. Se "classificacao" não estiver presente, ignore esse critério (não é obrigatório, é um caminho A MAIS de aprovação, nunca um requisito a mais).
 - Priorize "como_mandante" do Time A e "como_visitante" do Time B (não a média geral) — um time pode ser ótimo em casa e mediano fora, e é justamente o mando de campo que decide esse mercado. EXCEÇÃO: se "modo_copa" for true (torneio internacional, possivelmente em sede neutra), esse mando pode não refletir uma vantagem real de jogar "em casa" — nesse caso baseie-se na forma geral combinada em vez de insistir no recorte mandante/visitante.
-- Nos confrontos diretos disponíveis (até 10), o favorito não deve ter mais de 1 derrota — dê peso extra aos confrontos com "mesmo_mando_atual": true. 2+ derrotas no H2H é sinal de zebra recorrente — reduza o score fortemente.
+- Nos confrontos diretos RECENTES (dias_atras < 730), o favorito não deve ter mais de 1 derrota — dê peso extra aos confrontos com "mesmo_mando_atual": true. 2+ derrotas no H2H recente é sinal de zebra recorrente — reduza o score fortemente. Derrotas com mais de 2 anos NÃO contam pra esse limite (elencos e técnicos mudam — Regra 9); essa contagem é reconferida em código com o mesmo filtro (Gate 14).
 - Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times. Menos que isso, reduza o score e diga isso explicitamente em "alertas".
 - Competições eliminatórias / mata-mata (decisão, copa, playoff) têm motivação anormal e mais risco de zebra — se a "liga" indicada nos dados for desse tipo, reduza o score mesmo com favoritismo claro nas médias.`,
 
   'Lay Empate': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Lay Empate (o jogo não pode terminar em X):
 - Só aprove se a soma das médias de gols marcados dos dois times for >= 2.4. Jogos com tendência ofensiva clara empatam menos. Esse cálculo é reconferido em código depois da sua resposta (Gate 15) — se a soma real não bater, a aprovação é revertida automaticamente, então calcule certo.
-- Nos confrontos diretos disponíveis (até 10), no máximo 2 podem ter terminado empatados. 3+ empates no H2H é sinal forte de que esse confronto específico tende ao empate — reprove. Essa contagem também é reconferida em código (Gate 16).
+- Nos confrontos diretos RECENTES (dias_atras < 730), no máximo 2 podem ter terminado empatados. 3+ empates no H2H recente é sinal forte de que esse confronto específico tende ao empate — reprove. Empates com mais de 2 anos não contam pra esse limite (Regra 9). Essa contagem também é reconferida em código com o mesmo filtro (Gate 16).
 - Prefira confrontos com diferença de qualidade clara (favorito x zebra). Jogos historicamente equilibrados entre os mesmos dois times tendem a empate; isso deve reduzir o score mesmo se a soma de gols for alta. Se o campo "classificacao" estiver presente (posição/saldo de gols na tabela), use-o como sinal adicional de diferença de qualidade — mesma lógica do critério de "Dupla Chance": diferença de 8+ posições ou saldo de gols de 15+ é diferença clara de qualidade, mesmo com médias de gols parecidas.
 - Se "modo_copa" for true (torneio internacional / mata-mata), tenha cautela extra: jogos eliminatórios tendem a ter postura mais conservadora dos dois lados (às vezes o empate até interessa por regra de agregado), o que aumenta o risco de empate independentemente da diferença de qualidade entre os times — mencione isso no "insight" quando aplicável, reduzindo a confiança.
 - Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times.`,
 
   'Under 3.5 Gols': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Under 3.5 Gols (jogo total com 3 gols ou menos):
-- Só aprove se a soma das médias de gols marcados dos dois times for <= 2.6.
+- Só aprove se a soma das médias de gols marcados dos dois times for <= 2.1. O threshold antigo (2.6) implicava, sob Poisson, só ~74% de probabilidade de 3 gols ou menos — abaixo do mínimo de 85 desse mercado. Soma <= 2.0-2.1 é o que sustenta ~85-86%.
 - Exija que pelo menos um dos dois times tenha taxa de "jogos sem sofrer gol" (clean sheets / jogos disputados) >= 25%. Isso indica capacidade defensiva real, não só sorte pontual.
 - Nos confrontos diretos disponíveis (até 10), a média de gols totais por jogo deve ser <= 3.0. Histórico de jogos com 4+ gols entre esses times específicos é motivo forte para reprovar, mesmo com médias de temporada baixas.
 - Exija amostra mínima de 8 jogos disputados na temporada para AMBOS os times.`,
@@ -163,7 +165,7 @@ const CRITERIOS_MERCADO = {
 
   '+8.5 Escanteios': `CRITÉRIOS DE ALTA ASSERTIVIDADE — Over 8.5 Escanteios (total de escanteios do jogo, dos dois times somados, mínimo 9):
 - Os dados trazem "escanteios" dentro de "forma_recente_time_a/b" — é a média de escanteios TOTAIS (dos dois lados, não só desse time) nos jogos recentes em que esse time jogou. Se "escanteios" for null, ou se "jogos_considerados" dentro dele for bem menor que os 10 jogos buscados, a API não tem esse dado disponível pra boa parte desses jogos — cobertura de escanteio é tipicamente mais pobre que cobertura de gol, e MUITO mais pobre em jogos de seleção nacional (amistosos, eliminatórias) do que em ligas de clube europeias. Isso é uma limitação conhecida da fonte de dado, não uma falha — diga isso explicitamente no insight quando acontecer ("cobertura de escanteios é tipicamente mais pobre em jogos de seleção"), em vez de tratar como erro genérico. Reprove mesmo assim por dado insuficiente, mas com essa explicação específica.
-- Calcule a média combinada: (escanteios_time_a + escanteios_time_b) / 2. Só aprove se essa média combinada for >= 9.5 — margem de segurança sobre a linha de 8.5. ATENÇÃO: essa média combinada pode esconder um time com histórico de poucos escanteios sendo puxado pra cima só pelo número do adversário — se QUALQUER um dos dois times, isoladamente, tiver média própria bem abaixo da combinada (ex: um em 6, outro em 13, média 9.5 "passa" mas o time fraco pesa contra), reduza o score mesmo com a combinada aprovada. Isso é reconferido em código (Gate 17) com um piso mínimo por time — se algum dos dois vier muito baixo isoladamente, a aprovação é revertida automaticamente.
+- Calcule a média combinada: (escanteios_time_a + escanteios_time_b) / 2. Só aprove se essa média combinada for >= 11.5. O threshold antigo (9.5) implicava, com o desvio-padrão típico de escanteios (~3.5/jogo), só ~61% de probabilidade de 9+ escanteios — pouco mais que cara ou coroa, contra um mínimo declarado de 85 nesse mercado. Média combinada ~11.5-12 é o que sustenta ~80-84%. ATENÇÃO: essa média combinada pode esconder um time com histórico de poucos escanteios sendo puxado pra cima só pelo número do adversário — se QUALQUER um dos dois times, isoladamente, tiver média própria bem abaixo da combinada, reduza o score mesmo com a combinada aprovada. Isso é reconferido em código (Gate 17): média combinada >= 11.5 e piso mínimo por time — se falhar, a aprovação é revertida automaticamente.
 - Se "escanteios_h2h" estiver disponível (confrontos diretos específicos entre esses dois times), dê peso MAIOR a ele do que à média geral de cada time separado — é o dado mais específico que existe pra esse confronto. Se "escanteios_h2h.media_escanteios" for visivelmente menor que a média combinada geral, reduza o score.
 - Escanteio é um dado mais "ruidoso" que gol (varia mais jogo a jogo) — seja mais conservador aqui do que seria em mercados de gols com números parecidos. Exija amostra mínima de 8 jogos com dado de escanteio disponível pra AMBOS os times. Esse mercado tende a ser mais confiável em ligas de clube do que em jogos de seleção, justamente por causa da cobertura de dado.`,
 };
@@ -437,12 +439,15 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   if (mercado === '+8.5 Escanteios') {
     const escA = formaA?.escanteios?.jogos_considerados ?? null;
     const escB = formaB?.escanteios?.jogos_considerados ?? null;
-    if (escA == null || escB == null || escA <= AMOSTRA_MINIMA_RECORTE || escB <= AMOSTRA_MINIMA_RECORTE) {
+    // Antes usava <= AMOSTRA_MINIMA_RECORTE (6), o que deixava passar com 7
+    // jogos enquanto o texto do critério exige 8 — desalinhamento de
+    // fronteira apontado na auditoria. Agora usa o mesmo piso do texto.
+    if (escA == null || escB == null || escA < AMOSTRA_MINIMA_GERAL || escB < AMOSTRA_MINIMA_GERAL) {
       result.aprovado = false;
       result.score = Math.min(result.score, min - 1);
       result.alertas = [
         ...(result.alertas || []),
-        `[Enforcement automático] Amostra de escanteios insuficiente (Time A: ${escA ?? 'sem dado'} jogos, Time B: ${escB ?? 'sem dado'} jogos com dado de escanteio disponível). Aprovação da IA foi revertida pelo código — Gate 5.`,
+        `[Enforcement automático] Amostra de escanteios insuficiente (mínimo ${AMOSTRA_MINIMA_GERAL} jogos com dado de escanteio disponível — Time A: ${escA ?? 'sem dado'}, Time B: ${escB ?? 'sem dado'}). Aprovação da IA foi revertida pelo código — Gate 5.`,
       ];
     }
   }
@@ -554,6 +559,15 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   if (mercado === '+1.5 Gols') {
     const LIMIAR_SEM_MARCAR = 0.25; // mesmo threshold já definido no critério do mercado
     const AMOSTRA_MINIMA_GATE_RECORTE = 4; // ver comentário acima — deliberadamente menor que AMOSTRA_MINIMA_RECORTE
+    // Contagem mínima de eventos no recorte pequeno — correção da auditoria:
+    // com n=4 e limiar de 25%, UM único jogo sem marcar já disparava o
+    // risco. Só que a taxa populacional de "ficar sem marcar" de um time
+    // mediano é ~25-30% — 1 branco em 4 jogos acontece com ~68% de chance
+    // pra um time perfeitamente normal. Flagrar isso não é detectar risco,
+    // é flagrar ruído. Exigir >= 2 eventos no recorte pequeno (50% em n=4)
+    // separa padrão real de variância de amostra. A taxa GERAL (n=10)
+    // continua no limiar de 25% (que ali já significa 3+ brancos).
+    const CONTAGEM_MINIMA_RISCO_RECORTE = 2;
 
     const taxaSemMarcarA = taxaSemMarcar(formaA, 'jogos_considerados');
     const taxaSemMarcarB = taxaSemMarcar(formaB, 'jogos_considerados');
@@ -570,8 +584,12 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
       const amostraVisitanteB = visitanteB?.jogos_considerados;
       const confiavelA = recorteConfiavel(taxaMandanteA, dadosReais.estatisticas_time_a?.como_mandante, 'jogos_sem_marcar_gol', 'jogos_disputados');
       const confiavelB = recorteConfiavel(taxaVisitanteB, dadosReais.estatisticas_time_b?.como_visitante, 'jogos_sem_marcar_gol', 'jogos_disputados');
-      timeARiscoRecorte = taxaMandanteA != null && amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && taxaMandanteA >= LIMIAR_SEM_MARCAR && confiavelA;
-      timeBRiscoRecorte = taxaVisitanteB != null && amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && taxaVisitanteB >= LIMIAR_SEM_MARCAR && confiavelB;
+      timeARiscoRecorte = taxaMandanteA != null && amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE &&
+        (mandanteA?.jogos_sem_marcar_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
+        taxaMandanteA >= LIMIAR_SEM_MARCAR && confiavelA;
+      timeBRiscoRecorte = taxaVisitanteB != null && amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE &&
+        (visitanteB?.jogos_sem_marcar_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
+        taxaVisitanteB >= LIMIAR_SEM_MARCAR && confiavelB;
     }
 
     if (timeARisco || timeBRisco || timeARiscoRecorte || timeBRiscoRecorte) {
@@ -619,6 +637,7 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   if (mercado === '+0.5 Gols') {
     const LIMIAR_0_5 = 0.25; // mesmo threshold já definido no critério do mercado
     const AMOSTRA_MINIMA_GATE_RECORTE = 4; // ver comentário no Gate 9
+    const CONTAGEM_MINIMA_RISCO_RECORTE = 2; // ver comentário no Gate 9 — 1 evento em n=4 é ruído, não padrão
 
     const semMarcarA = taxaCampo(formaA, 'jogos_sem_marcar_gol', 'jogos_considerados');
     const semMarcarB = taxaCampo(formaB, 'jogos_sem_marcar_gol', 'jogos_considerados');
@@ -655,9 +674,13 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
 
       riscoARecorte = amostraOk && semMarcarMandanteA != null && semSofrerVisitanteB != null &&
         semMarcarMandanteA >= LIMIAR_0_5 && semSofrerVisitanteB >= LIMIAR_0_5 &&
+        (mandanteA?.jogos_sem_marcar_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
+        (visitanteB?.jogos_sem_sofrer_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
         confiavelSemMarcarMandanteA && confiavelSemSofrerVisitanteB;
       riscoBRecorte = amostraOk && semMarcarVisitanteB != null && semSofrerMandanteA != null &&
         semMarcarVisitanteB >= LIMIAR_0_5 && semSofrerMandanteA >= LIMIAR_0_5 &&
+        (visitanteB?.jogos_sem_marcar_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
+        (mandanteA?.jogos_sem_sofrer_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
         confiavelSemMarcarVisitanteB && confiavelSemSofrerMandanteA;
     }
 
@@ -703,6 +726,7 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   if (mercado === 'BTTS Não') {
     const LIMIAR_BTTS = 0.30; // mesmo threshold já definido no critério do mercado
     const AMOSTRA_MINIMA_GATE_RECORTE = 4; // ver comentário no Gate 9
+    const CONTAGEM_MINIMA_RISCO_RECORTE = 2; // ver comentário no Gate 9 — vale também quando o recorte JUSTIFICA aprovação: 1 clean sheet em 4 jogos não estabelece "defesa sólida"
 
     const semMarcarA = taxaCampo(formaA, 'jogos_sem_marcar_gol', 'jogos_considerados');
     const semMarcarB = taxaCampo(formaB, 'jogos_sem_marcar_gol', 'jogos_considerados');
@@ -725,12 +749,16 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
 
       temSinalRecorte =
         (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semMarcarMandanteA != null && semMarcarMandanteA >= LIMIAR_BTTS &&
+          (mandanteA?.jogos_sem_marcar_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
           recorteConfiavel(semMarcarMandanteA, statsMandanteA, 'jogos_sem_marcar_gol', 'jogos_disputados')) ||
         (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semMarcarVisitanteB != null && semMarcarVisitanteB >= LIMIAR_BTTS &&
+          (visitanteB?.jogos_sem_marcar_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
           recorteConfiavel(semMarcarVisitanteB, statsVisitanteB, 'jogos_sem_marcar_gol', 'jogos_disputados')) ||
         (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerMandanteA != null && semSofrerMandanteA >= LIMIAR_BTTS &&
+          (mandanteA?.jogos_sem_sofrer_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
           recorteConfiavel(semSofrerMandanteA, statsMandanteA, 'jogos_sem_sofrer_gol', 'jogos_disputados')) ||
         (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerVisitanteB != null && semSofrerVisitanteB >= LIMIAR_BTTS &&
+          (visitanteB?.jogos_sem_sofrer_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
           recorteConfiavel(semSofrerVisitanteB, statsVisitanteB, 'jogos_sem_sofrer_gol', 'jogos_disputados'));
     }
 
@@ -766,6 +794,7 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   if (mercado === 'Under 3.5 Gols') {
     const LIMIAR_U35 = 0.25; // mesmo threshold já definido no critério do mercado
     const AMOSTRA_MINIMA_GATE_RECORTE = 4; // ver comentário no Gate 9
+    const CONTAGEM_MINIMA_RISCO_RECORTE = 2; // ver comentário no Gate 9/11
 
     const semSofrerA = taxaCampo(formaA, 'jogos_sem_sofrer_gol', 'jogos_considerados');
     const semSofrerB = taxaCampo(formaB, 'jogos_sem_sofrer_gol', 'jogos_considerados');
@@ -784,8 +813,10 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
 
       temDefesaSolidaRecorte =
         (amostraMandanteA >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerMandanteA != null && semSofrerMandanteA >= LIMIAR_U35 &&
+          (mandanteA?.jogos_sem_sofrer_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
           recorteConfiavel(semSofrerMandanteA, statsMandanteA, 'jogos_sem_sofrer_gol', 'jogos_disputados')) ||
         (amostraVisitanteB >= AMOSTRA_MINIMA_GATE_RECORTE && semSofrerVisitanteB != null && semSofrerVisitanteB >= LIMIAR_U35 &&
+          (visitanteB?.jogos_sem_sofrer_gol ?? 0) >= CONTAGEM_MINIMA_RISCO_RECORTE &&
           recorteConfiavel(semSofrerVisitanteB, statsVisitanteB, 'jogos_sem_sofrer_gol', 'jogos_disputados'));
     }
 
@@ -847,6 +878,12 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
       let derrotas = 0;
       const detalhes = [];
       for (const j of h2h) {
+        // Filtro de recência adicionado na auditoria: os Gates 13 e 18-22 já
+        // filtravam por dias_atras < 730, e a Regra 9 manda tratar H2H de 2+
+        // anos como pouco confiável — mas este gate contava derrota de 4-5
+        // anos atrás (elenco/técnico completamente diferentes) com o mesmo
+        // peso de uma do mês passado. Consistência com o resto do sistema.
+        if (j.dias_atras == null || j.dias_atras >= 730) continue;
         const partes = String(j.placar || '').split('-').map(s => parseInt(s, 10));
         if (partes.length !== 2 || !Number.isFinite(partes[0]) || !Number.isFinite(partes[1])) continue;
         const [golsCasa, golsFora] = partes;
@@ -863,7 +900,7 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
         result.score = Math.min(result.score, min - 1);
         result.alertas = [
           ...(result.alertas || []),
-          `[Enforcement automático] Favorito (Time ${favorito}, lado aprovado "${result.lado_aprovado}") tem ${derrotas} derrota(s) nos confrontos diretos disponíveis — ${detalhes.join('; ')}. Sinal de zebra recorrente que o próprio critério do mercado manda reduzir fortemente. Aprovação da IA foi revertida pelo código — Gate 14.`,
+          `[Enforcement automático] Favorito (Time ${favorito}, lado aprovado "${result.lado_aprovado}") tem ${derrotas} derrota(s) nos confrontos diretos dos últimos 2 anos — ${detalhes.join('; ')}. Sinal de zebra recorrente que o próprio critério do mercado manda reduzir fortemente. Aprovação da IA foi revertida pelo código — Gate 14.`,
         ];
       }
     }
@@ -895,6 +932,10 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
     const h2h = dadosReais.confrontos_diretos || [];
     let empates = 0;
     for (const j of h2h) {
+      // Mesmo filtro de recência do Gate 14 (ver comentário lá) — empate de
+      // 4-5 anos atrás não caracteriza "tendência ao empate" desse confronto
+      // hoje, com elencos diferentes.
+      if (j.dias_atras == null || j.dias_atras >= 730) continue;
       const partes = String(j.placar || '').split('-').map(s => parseInt(s, 10));
       if (partes.length === 2 && Number.isFinite(partes[0]) && Number.isFinite(partes[1]) && partes[0] === partes[1]) {
         empates++;
@@ -905,40 +946,52 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
       result.score = Math.min(result.score, min - 1);
       result.alertas = [
         ...(result.alertas || []),
-        `[Enforcement automático] ${empates} empates nos confrontos diretos disponíveis — sinal forte de tendência ao empate nesse confronto específico, acima do máximo permitido pelo critério do mercado (2). Aprovação da IA foi revertida pelo código — Gate 16.`,
+        `[Enforcement automático] ${empates} empates nos confrontos diretos dos últimos 2 anos — sinal forte de tendência ao empate nesse confronto específico, acima do máximo permitido pelo critério do mercado (2). Aprovação da IA foi revertida pelo código — Gate 16.`,
       ];
     }
   }
 
-  // Gate 17 — mascaramento de média combinada pro mercado +8.5 Escanteios.
-  // O critério exige (escanteios_time_a + escanteios_time_b)/2 >= 9.5, mas
-  // essa média combinada pode esconder um time cujo próprio histórico de
-  // escanteios é consistentemente baixo, puxado pra cima só pelo número do
-  // adversário — mesmo tipo de mascaramento que o Gate 9 corrigiu pra
-  // gols, aqui aplicado a escanteios. Usa dado que JÁ existe (cada time já
-  // tem seu "escanteios.media_escanteios" próprio, calculado separadamente
-  // em forma_recente_time_a/b) — não precisa de nenhuma chamada de API
-  // nova. O piso de 7.5 é um valor de partida razoável (proporcional ao
-  // threshold combinado de 9.5), não um número calibrado com dado real —
-  // ajustar depois de acumular amostra suficiente pelo protocolo de
+  // Gate 17 — volume de escanteios: média combinada mínima E piso
+  // individual por time, pro mercado +8.5 Escanteios. O piso individual
+  // fecha o mascaramento de média combinada (um time fraco puxado pra cima
+  // só pelo número do adversário — mesmo tipo de mascaramento que o Gate 9
+  // corrigiu pra gols). Usa dado que JÁ existe (cada time tem seu
+  // "escanteios.media_escanteios" próprio em forma_recente_time_a/b) — não
+  // precisa de nenhuma chamada de API nova. Valores atuais recalibrados na
+  // auditoria de julho/2026 (ver comentário dentro do bloco); ajustar de
+  // novo quando houver amostra resolvida suficiente, pelo protocolo de
   // calibração de sempre.
   if (mercado === '+8.5 Escanteios') {
-    const LIMIAR_INDIVIDUAL_ESCANTEIOS = 7.5; // valor de partida, não calibrado ainda
+    // Thresholds recalibrados na auditoria de julho/2026: escanteios têm
+    // desvio-padrão típico de ~3.5/jogo, então média combinada 9.5 implica
+    // só ~61% de P(>=9) — pouco mais que cara ou coroa, num mercado com
+    // mínimo declarado de 85. Média combinada ~11.5-12 é o necessário pra
+    // ~80-84%. O piso individual (antes 7.5) sobe na mesma proporção. O
+    // veto pela COMBINADA também virou determinístico — antes só existia no
+    // texto do prompt, o único dos thresholds numéricos objetivos desse
+    // mercado sem reconferência em código.
+    const LIMIAR_INDIVIDUAL_ESCANTEIOS = 9.0;
+    const LIMIAR_COMBINADO_ESCANTEIOS = 11.5;
     const mediaEscA = formaA?.escanteios?.media_escanteios ?? null;
     const mediaEscB = formaB?.escanteios?.media_escanteios ?? null;
+    const mediaCombinada = (mediaEscA != null && mediaEscB != null)
+      ? +((mediaEscA + mediaEscB) / 2).toFixed(2)
+      : null;
 
     const riscoA = mediaEscA != null && mediaEscA < LIMIAR_INDIVIDUAL_ESCANTEIOS;
     const riscoB = mediaEscB != null && mediaEscB < LIMIAR_INDIVIDUAL_ESCANTEIOS;
+    const riscoCombinado = mediaCombinada != null && mediaCombinada < LIMIAR_COMBINADO_ESCANTEIOS;
 
-    if (riscoA || riscoB) {
+    if (riscoA || riscoB || riscoCombinado) {
       const partes = [];
-      if (riscoA) partes.push(`Time A com média própria de ${mediaEscA} escanteios/jogo`);
-      if (riscoB) partes.push(`Time B com média própria de ${mediaEscB} escanteios/jogo`);
+      if (riscoCombinado) partes.push(`média combinada de ${mediaCombinada} escanteios/jogo (mínimo ${LIMIAR_COMBINADO_ESCANTEIOS})`);
+      if (riscoA) partes.push(`Time A com média própria de ${mediaEscA} escanteios/jogo (piso individual ${LIMIAR_INDIVIDUAL_ESCANTEIOS})`);
+      if (riscoB) partes.push(`Time B com média própria de ${mediaEscB} escanteios/jogo (piso individual ${LIMIAR_INDIVIDUAL_ESCANTEIOS})`);
       result.aprovado = false;
       result.score = Math.min(result.score, min - 1);
       result.alertas = [
         ...(result.alertas || []),
-        `[Enforcement automático] Média combinada pode estar mascarando um lado fraco: ${partes.join(' e ')} — abaixo de ${LIMIAR_INDIVIDUAL_ESCANTEIOS}, mesmo que a média combinada dos dois times clareie o threshold de 9.5. Aprovação da IA foi revertida pelo código — Gate 17.`,
+        `[Enforcement automático] Volume de escanteios insuficiente pra sustentar Over 8.5 com a confiança exigida: ${partes.join('; ')}. Com o desvio-padrão típico de escanteios (~3.5/jogo), média combinada abaixo de ${LIMIAR_COMBINADO_ESCANTEIOS} não sustenta ${min}% de probabilidade. Aprovação da IA foi revertida pelo código — Gate 17.`,
       ];
     }
   }
@@ -963,7 +1016,15 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
   // (ver h2hResumido em footballData.js), então o primeiro item que bate
   // mesmo_mando_atual + tem placar_1t + está dentro de 730 dias É o mais
   // recente/relevante por definição — não precisa reordenar.
-  if (mercado === '-2.5 Gols 1T' || mercado === '+0.5 Gols 1T') {
+  // REESTRUTURADO na auditoria de julho/2026: a força de evidência de UM
+  // precedente de H2H depende da taxa base do evento contraditório. Um 1T
+  // com 3+ gols acontece em ~10% dos jogos — ver um no H2H recente é
+  // evidência genuína (mantém veto com n=1). Já um 1T 0x0 acontece em
+  // ~25-30% dos jogos — um único precedente é evidência fraca, e vetar por
+  // ele é descartar sinal legítimo por um evento comum. Pra esse caso, o
+  // veto agora exige 2 contradições entre os até 3 H2H recentes (mesma
+  // lógica dos Gates 19/21/22 abaixo).
+  if (mercado === '-2.5 Gols 1T') {
     const h2h = dadosReais.confrontos_diretos || [];
     const maisRecenteMesmoMando = h2h.find(j =>
       j.mesmo_mando_atual === true &&
@@ -975,39 +1036,52 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
       const partes = String(maisRecenteMesmoMando.placar_1t).split('-').map(s => parseInt(s, 10));
       if (partes.length === 2 && Number.isFinite(partes[0]) && Number.isFinite(partes[1])) {
         const totalGols1T = partes[0] + partes[1];
-        const contradiz = mercado === '-2.5 Gols 1T' ? totalGols1T >= 3 : totalGols1T === 0;
-
-        if (contradiz) {
-          const explicacao = mercado === '-2.5 Gols 1T'
-            ? `precisa de no máximo 2 gols no 1T, mas teve ${totalGols1T}`
-            : `precisa de pelo menos 1 gol no 1T, mas terminou 0-0`;
+        if (totalGols1T >= 3) {
           result.aprovado = false;
           result.score = Math.min(result.score, min - 1);
           result.alertas = [
             ...(result.alertas || []),
-            `[Enforcement automático] O confronto direto mais recente com o mesmo mando de campo (${maisRecenteMesmoMando.dias_atras} dias atrás: ${maisRecenteMesmoMando.casa} ${maisRecenteMesmoMando.placar_1t} ${maisRecenteMesmoMando.fora} no 1T) contradiz diretamente o critério do mercado — ${explicacao}. Esse é o precedente mais específico disponível pra esse confronto; sozinho já é motivo de reprovação, independente do que a média geral (10 jogos) indicar. Aprovação da IA foi revertida pelo código — Gate 18.`,
+            `[Enforcement automático] O confronto direto mais recente com o mesmo mando de campo (${maisRecenteMesmoMando.dias_atras} dias atrás: ${maisRecenteMesmoMando.casa} ${maisRecenteMesmoMando.placar_1t} ${maisRecenteMesmoMando.fora} no 1T) contradiz diretamente o critério do mercado — precisa de no máximo 2 gols no 1T, mas teve ${totalGols1T}. 1T com 3+ gols é um evento raro (~10% dos jogos), então esse precedente específico sozinho já é motivo de reprovação. Aprovação da IA foi revertida pelo código — Gate 18.`,
           ];
         }
       }
     }
   }
 
-  // ── Gates 19-22: mesmo padrão de veto do Gate 18 (H2H mais recente com
-  // mesmo mando, dentro de 730 dias, como precedente que sozinho já basta
-  // pra reprovar quando contradiz o critério central), agora estendido dos
-  // mercados de 1º tempo pros de gol cheio. O Gate 18 provou o valor desse
-  // padrão no caso Vancouver x York — não faz sentido restringir isso só a
-  // 1T quando o mesmo tipo de contradição pode acontecer em qualquer
-  // mercado de gols: a IA vê o H2H mais relevante contradizendo, anota isso
-  // no alerta, e aprova mesmo assim porque a média geral "pesa mais" no
-  // julgamento holístico. Fecha essa mesma brecha nos 4 mercados que
-  // seguem o padrão simples de "conta os gols do placar e compara contra
-  // um limiar" (não se aplica a Lay 2x2/Dupla Chance/Lay Empate, que já têm
-  // seus próprios vetos de H2H mais específicos nos Gates 13-16, nem a
-  // Escanteios, cujo dado de H2H não vem granular o suficiente por jogo).
+  if (mercado === '+0.5 Gols 1T') {
+    const c = contradicoesH2HRecentes(dadosReais, true, p => p.total === 0);
+    if (c.contradicoes >= 2) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] ${c.contradicoes} dos ${c.considerados} confrontos diretos recentes (últimos 2 anos) tiveram 1º tempo 0x0 (${c.exemplos.join('; ')}) — padrão recorrente contradizendo o critério do mercado, não caso isolado. Aprovação da IA foi revertida pelo código — Gate 18.`,
+      ];
+    }
+  }
+
+  // ── Gates 19-22: veto por padrão recorrente no H2H recente. REESTRUTURADO
+  // na auditoria de julho/2026: a versão anterior vetava com base num ÚNICO
+  // H2H (o mais recente de mesmo mando), calibrada a partir de UM red
+  // (Vancouver x York) — exatamente a classe de "aprender com caso isolado"
+  // que o resto do sistema (recorteConfiavel, pisos de amostra) existe pra
+  // evitar. O problema é a taxa base dos eventos contraditórios:
+  //   - jogo com 0-1 gol total: ~25% dos jogos (Gate 19)
+  //   - jogo com 4+ gols: ~22% dos jogos (Gate 21)
+  //   - ambos marcando (BTTS sim): ~50% dos jogos (Gate 22!)
+  // Com taxa base de 50%, o Gate 22 antigo reprovava por cara ou coroa:
+  // metade dos sinais legítimos de BTTS Não com H2H recente de mesmo mando
+  // era vetada por um evento que acontece em metade dos jogos de futebol.
+  // A regra nova: só veta quando >= 2 dos até 3 H2H recentes (dias_atras
+  // < 730, QUALQUER mando — exigir 2 já dá a robustez que o filtro de
+  // mando tentava dar com n=1, e usar qualquer mando aumenta a amostra)
+  // contradizem o critério central. Um precedente isolado deixa de vetar;
+  // um PADRÃO recorrente continua vetando. Eventos raros (2-2 no Gate 13,
+  // 0x0 no Gate 20, 3+ gols de 1T no Gate 18) mantêm o veto com n=1 —
+  // nesses, um único precedente É evidência estatística real.
   //
-  // Função auxiliar única, reaproveitada nos 4 gates — evita duplicar a
-  // mesma extração/parse de placar quatro vezes.
+  // Funções auxiliares únicas, reaproveitadas nos gates — evitam duplicar
+  // a mesma extração/parse de placar várias vezes.
   function h2hMaisRecenteMesmoMando(dadosReais) {
     const h2h = dadosReais.confrontos_diretos || [];
     return h2h.find(j =>
@@ -1021,21 +1095,40 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
     if (partes.length !== 2 || !Number.isFinite(partes[0]) || !Number.isFinite(partes[1])) return null;
     return { golsCasa: partes[0], golsFora: partes[1], total: partes[0] + partes[1] };
   }
-
-  // Gate 19 — +1.5 Gols: H2H mais recente/mesmo mando com total < 2 gols
-  // contradiz diretamente o mercado (precisa >= 2).
-  if (mercado === '+1.5 Gols') {
-    const precedente = h2hMaisRecenteMesmoMando(dadosReais);
-    if (precedente) {
-      const p = totalGolsPlacar(precedente.placar);
-      if (p && p.total < 2) {
-        result.aprovado = false;
-        result.score = Math.min(result.score, min - 1);
-        result.alertas = [
-          ...(result.alertas || []),
-          `[Enforcement automático] O confronto direto mais recente com o mesmo mando de campo (${precedente.dias_atras} dias atrás: ${precedente.casa} ${precedente.placar} ${precedente.fora}) terminou com apenas ${p.total} gol(s) — contradiz diretamente o critério do mercado (precisa de pelo menos 2). Aprovação da IA foi revertida pelo código — Gate 19.`,
-        ];
+  // Conta quantos dos até 3 H2H recentes (< 730 dias, qualquer mando)
+  // contradizem o critério, segundo o teste passado. usa1T = true lê
+  // placar_1t em vez do placar final. "confrontos_diretos" já vem ordenado
+  // do mais recente pro mais antigo (ver h2hResumido em footballData.js).
+  function contradicoesH2HRecentes(dadosReais, usa1T, testaContradicao, maxJogos = 3) {
+    const h2h = dadosReais.confrontos_diretos || [];
+    const recentes = h2h
+      .filter(j => j.dias_atras != null && j.dias_atras < 730 && (usa1T ? j.placar_1t : j.placar))
+      .slice(0, maxJogos);
+    let contradicoes = 0;
+    const exemplos = [];
+    for (const j of recentes) {
+      const p = totalGolsPlacar(usa1T ? j.placar_1t : j.placar);
+      if (!p) continue;
+      if (testaContradicao(p)) {
+        contradicoes++;
+        exemplos.push(`${j.casa} ${usa1T ? j.placar_1t + ' (1T)' : j.placar} ${j.fora}, ${j.dias_atras} dias atrás`);
       }
+    }
+    return { contradicoes, considerados: recentes.length, exemplos };
+  }
+
+  // Gate 19 — +1.5 Gols: padrão recorrente de jogos com menos de 2 gols no
+  // H2H recente (ver racional do bloco acima — evento com taxa base ~25%,
+  // um precedente isolado não veta mais; 2 de 3 vetam).
+  if (mercado === '+1.5 Gols') {
+    const c = contradicoesH2HRecentes(dadosReais, false, p => p.total < 2);
+    if (c.contradicoes >= 2) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] ${c.contradicoes} dos ${c.considerados} confrontos diretos recentes (últimos 2 anos) terminaram com menos de 2 gols (${c.exemplos.join('; ')}) — padrão recorrente contradizendo o critério do mercado, não caso isolado. Aprovação da IA foi revertida pelo código — Gate 19.`,
+      ];
     }
   }
 
@@ -1056,37 +1149,57 @@ function aplicarEnforcementDeterministico(mercado, dadosReais, result, min) {
     }
   }
 
-  // Gate 21 — Under 3.5 Gols: H2H mais recente/mesmo mando com total >= 4
-  // gols contradiz diretamente o mercado (precisa <= 3).
+  // Gate 21 — Under 3.5 Gols: padrão recorrente de jogos com 4+ gols no H2H
+  // recente (taxa base ~22% — mesma migração de n=1 pra 2-de-3 do Gate 19).
   if (mercado === 'Under 3.5 Gols') {
-    const precedente = h2hMaisRecenteMesmoMando(dadosReais);
-    if (precedente) {
-      const p = totalGolsPlacar(precedente.placar);
-      if (p && p.total >= 4) {
-        result.aprovado = false;
-        result.score = Math.min(result.score, min - 1);
-        result.alertas = [
-          ...(result.alertas || []),
-          `[Enforcement automático] O confronto direto mais recente com o mesmo mando de campo (${precedente.dias_atras} dias atrás: ${precedente.casa} ${precedente.placar} ${precedente.fora}) terminou com ${p.total} gols — contradiz diretamente o critério do mercado (precisa de no máximo 3). Aprovação da IA foi revertida pelo código — Gate 21.`,
-        ];
-      }
+    const c = contradicoesH2HRecentes(dadosReais, false, p => p.total >= 4);
+    if (c.contradicoes >= 2) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] ${c.contradicoes} dos ${c.considerados} confrontos diretos recentes (últimos 2 anos) terminaram com 4+ gols (${c.exemplos.join('; ')}) — padrão recorrente contradizendo o critério do mercado, não caso isolado. Aprovação da IA foi revertida pelo código — Gate 21.`,
+      ];
     }
   }
 
-  // Gate 22 — BTTS Não: H2H mais recente/mesmo mando com AMBOS os times
-  // marcando é precedente direto de BTTS SIM, contradizendo BTTS Não.
+  // Gate 22 — BTTS Não: padrão recorrente de "ambos marcam" no H2H recente.
+  // Esse era o pior caso da versão n=1: BTTS SIM acontece em ~50% dos jogos
+  // de futebol, então vetar por UM precedente era literalmente reprovar por
+  // cara ou coroa. Agora exige 2 de 3 — só o padrão recorrente veta.
   if (mercado === 'BTTS Não') {
-    const precedente = h2hMaisRecenteMesmoMando(dadosReais);
-    if (precedente) {
-      const p = totalGolsPlacar(precedente.placar);
-      if (p && p.golsCasa >= 1 && p.golsFora >= 1) {
-        result.aprovado = false;
-        result.score = Math.min(result.score, min - 1);
-        result.alertas = [
-          ...(result.alertas || []),
-          `[Enforcement automático] O confronto direto mais recente com o mesmo mando de campo (${precedente.dias_atras} dias atrás: ${precedente.casa} ${precedente.placar} ${precedente.fora}) teve os dois times marcando — precedente direto de BTTS SIM, contradizendo o mercado BTTS Não. Aprovação da IA foi revertida pelo código — Gate 22.`,
-        ];
-      }
+    const c = contradicoesH2HRecentes(dadosReais, false, p => p.golsCasa >= 1 && p.golsFora >= 1);
+    if (c.contradicoes >= 2) {
+      result.aprovado = false;
+      result.score = Math.min(result.score, min - 1);
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Enforcement automático] ${c.contradicoes} dos ${c.considerados} confrontos diretos recentes (últimos 2 anos) tiveram os dois times marcando (${c.exemplos.join('; ')}) — padrão recorrente de BTTS SIM nesse confronto específico, não caso isolado. Aprovação da IA foi revertida pelo código — Gate 22.`,
+      ];
+    }
+  }
+
+  // Gate 23 — baseline Poisson (INFORMATIVO, não bloqueante). Compara a
+  // probabilidade estimada pelo modelo determinístico (ver
+  // lib/poissonBaseline.js) com o mínimo de confiança do mercado. Quando o
+  // baseline fica 10pp+ abaixo do mínimo num sinal APROVADO, anexa alerta —
+  // não reverte nada por ora: está em fase de coleta. O baseline vai junto
+  // no dados_reais_snapshot de toda análise; depois de 15+ resolvidos
+  // (protocolo de calibração de sempre), compara-se baseline vs resultado
+  // real pra decidir se ele vira gate bloqueante e com qual margem.
+  const baseline = dadosReais.baseline_poisson;
+  if (result.aprovado && baseline) {
+    let probBaseline = baseline.probabilidade_estimada ?? null;
+    if (mercado === 'Dupla Chance') {
+      probBaseline = result.lado_aprovado === '1X'
+        ? (baseline.prob_1x ?? null)
+        : (result.lado_aprovado === 'X2' ? (baseline.prob_x2 ?? null) : null);
+    }
+    if (probBaseline != null && (min - probBaseline) > 10) {
+      result.alertas = [
+        ...(result.alertas || []),
+        `[Informativo — não bloqueante] O baseline estatístico (Poisson sobre as médias de ataque/defesa dos dois times, fonte: ${baseline.fonte}) estima ${probBaseline}% de probabilidade pra esse mercado — ${(min - probBaseline).toFixed(1)}pp abaixo do mínimo de confiança exigido (${min}%). Isso NÃO afeta a aprovação por ora (em fase de calibração), mas é um sinal de que os dados médios sustentam menos confiança do que o score declara — Gate 23.`,
+      ];
     }
   }
 }
@@ -1234,6 +1347,7 @@ function montarSystemPrompt() {
 13. Se o mercado for "Dupla Chance", você precisa identificar explicitamente qual lado está sendo aprovado e preencher o campo "lado_aprovado" com "1X" (Time A, o mandante, não perde — vence ou empata) ou "X2" (Time B, o visitante, não perde). Isso não é opcional: é o que permite, dias depois, checar o placar real e saber se a aprovação bateu ou não. Pra qualquer mercado que não seja "Dupla Chance", "lado_aprovado" deve ser sempre null.
 14. Se a mensagem do usuário incluir um bloco "CONTEXTO DE CALIBRAÇÃO HISTÓRICA", esse é o desempenho real e medido desse mercado especificamente (taxa de acerto de sinais aprovados e já resolvidos, com limite inferior de confiança estatística). Use isso SÓ como ajuste de confiança geral, nunca como critério de aprovação: se o limite inferior estiver bem abaixo do esperado pra esse mercado, seja mais conservador no score mesmo que os critérios individuais pareçam bons, e mencione isso no "insight". NUNCA use uma taxa histórica boa pra justificar aprovar um sinal que não atende aos critérios estatísticos do jogo atual — o histórico informa o quanto confiar no sistema como um todo, não substitui a análise do confronto específico. Se esse bloco não estiver presente, é porque ainda não há amostra suficiente desse mercado pra esse cálculo — não trate a ausência como sinal bom ou ruim.
 15. "forma_recente_time_a/b" pode trazer um subcampo "descanso" com "dias_desde_ultimo_jogo", "jogos_ultimos_7_dias" e "jogos_ultimos_14_dias" — calendário do time até a data do confronto analisado. NÃO existe uma direção fixa de "calendário apertado = pior": times grandes costumam rotacionar elenco pra preservar titulares em jogos de calendário cheio (o resultado principal não necessariamente piora); times sem profundidade de elenco sentem mais o desgaste. Use como CONTEXTO pra explicar performance inconsistente quando fizer sentido (ex: "media_gols_marcados" caiu nos "ultimos_5" e o time vinha de 3 jogos em 7 dias — desgaste é uma explicação plausível), não como regra numérica de desconto automático de score. "dias_desde_ultimo_jogo" muito alto (15+) pode indicar falta de ritmo competitivo, principalmente após pausas de seleção — também mencione se relevante. Se "descanso" vier null ou ausente, é porque não havia jogos recentes suficientes com data pra calcular — trate como ausência de dado, não como sinal de calendário tranquilo.
+16. Os dados podem trazer um campo "baseline_poisson" — uma estimativa determinística, calculada em código, da probabilidade desse mercado a partir das médias de ataque e defesa dos DOIS times combinadas (modelo de Poisson; pra escanteios, aproximação normal). O campo "fonte" indica de qual recorte as médias vieram. Use isso como ÂNCORA DE SANIDADE da sua "probabilidade_real": se a sua estimativa divergir 15pp ou mais do baseline, isso exige justificativa explícita no "insight" apontando qual dado concreto sustenta a divergência (H2H recente forte, mudança de momento clara em "ultimos_5", contexto que médias não capturam) — sem justificativa concreta, aproxime sua estimativa do baseline em vez de confiar no seu palpite. Pra "Dupla Chance", o baseline traz "prob_1x" e "prob_x2" — use o do lado que você está aprovando. Limitações conhecidas do modelo (reconheça, mas não use como desculpa genérica pra ignorá-lo): assume independência entre os gols dos dois times e não sabe de lesões, desfalques ou motivação. O baseline NÃO é critério de aprovação nem de reprovação automática — é referência de calibração. Se o campo não estiver presente, siga a análise normal sem mencioná-lo.
 
 Responda SOMENTE com JSON válido, sem markdown, sem texto fora do JSON.`;
 }
@@ -1270,6 +1384,17 @@ export async function POST(request) {
       getFootballData(jogo, { mercado }),
       buscarContextoCalibracao(session.userId, mercado),
     ]);
+
+    // Baseline Poisson — calculado em código a partir dos dados que já
+    // vieram (zero API extra). Anexado a dadosReais ANTES da montagem do
+    // prompt e do snapshot, de propósito: assim ele (a) entra no bloco DADOS
+    // que a IA vê (Regra 16 do system prompt explica como usar), (b) é salvo
+    // automaticamente em dados_reais_snapshot pra calibração futura, e (c)
+    // fica disponível pro Gate 23 (alerta informativo de divergência). Fase
+    // atual: NÃO-bloqueante — nunca mexe em aprovado/score.
+    if (dadosReais.disponivel) {
+      dadosReais.baseline_poisson = calcularBaselinePoisson(mercado, dadosReais);
+    }
 
     // jogos_recentes_time_a/b são só pro preview de estatísticas da grade do
     // dia — não fazem sentido no prompt da IA (ela já tem os números
@@ -1344,6 +1469,7 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
     result._dadosReaisUsados = dadosReais.disponivel;
     result._oddsReais = dadosReais.odds_mercado_real || null;
     result._contextoCalibracao = contextoCalibracao;
+    result._baselinePoisson = dadosReais.baseline_poisson || null;
 
     // Reverte a aprovação na marra se o dado real não sustenta, mesmo que a
     // IA tenha aprovado — não depende mais só da IA "lembrar" da Regra 12.
