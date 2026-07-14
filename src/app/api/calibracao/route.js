@@ -38,8 +38,12 @@ export async function GET(request) {
   if (!session) return NextResponse.json({ error: 'Não autenticado.' }, { status: 401 });
 
   const db = getSupabaseAdmin();
+  // "baseline:dados_reais_snapshot->baseline_poisson" extrai SÓ o campo
+  // baseline_poisson de dentro do snapshot JSON direto no banco (sintaxe de
+  // JSON path do PostgREST) — puxar o snapshot inteiro de até 5000 análises
+  // seria megabytes de dado pra usar um campo pequeno.
   const { data, error } = await db.from('analises_historico')
-    .select('mercado, score, aprovado, resultado, competicao, resolvido_automaticamente, sinais_fracos_count, match_exato_a, match_exato_b')
+    .select('mercado, score, aprovado, resultado, competicao, resolvido_automaticamente, sinais_fracos_count, match_exato_a, match_exato_b, lado_aprovado, baseline:dados_reais_snapshot->baseline_poisson')
     .eq('user_id', session.userId)
     .order('analisado_em', { ascending: false })
     .limit(5000);
@@ -132,6 +136,61 @@ export async function GET(request) {
   const greensGeral = aprovadasResolvidas.filter(d => d.resultado === 'green').length;
   const wilsonGeral = wilsonLowerBound(greensGeral, aprovadasResolvidas.length);
 
+  // ── Baseline Poisson vs resultado real (decide a promoção do Gate 23) ───
+  // Pra cada análise aprovada+resolvida que tem baseline salvo no snapshot,
+  // agrupa pela FAIXA de probabilidade que o baseline estimou e compara com
+  // a taxa de acerto real. Se o baseline estiver bem calibrado (faixa 70-79
+  // acertando ~70-79%, etc.) e o score da IA não, isso é a evidência que
+  // justifica promover o Gate 23 de informativo a bloqueante — e o contrário
+  // também: se o baseline errar feio, ele fica informativo pra sempre.
+  // Mesmo protocolo de leitura dos outros blocos: mínimo de amostra por
+  // faixa antes de concluir qualquer coisa.
+  function probBaselineDe(d) {
+    const b = d.baseline;
+    if (!b) return null;
+    if (d.mercado === 'Dupla Chance') {
+      if (d.lado_aprovado === '1X') return b.prob_1x ?? null;
+      if (d.lado_aprovado === 'X2') return b.prob_x2 ?? null;
+      return null;
+    }
+    return b.probabilidade_estimada ?? null;
+  }
+  function faixaBaseline(p) {
+    if (p < 70) return '<70';
+    if (p < 80) return '70-79';
+    if (p < 90) return '80-89';
+    return '90+';
+  }
+  const comBaseline = aprovadasResolvidas
+    .map(d => ({ d, prob: probBaselineDe(d) }))
+    .filter(x => x.prob != null);
+  const porFaixaBaseline = {};
+  let somaAbsErroBaseline = 0, somaAbsErroScore = 0;
+  for (const { d, prob } of comBaseline) {
+    const k = faixaBaseline(prob);
+    if (!porFaixaBaseline[k]) porFaixaBaseline[k] = { faixa_baseline: k, total: 0, greens: 0, soma_prob_baseline: 0 };
+    porFaixaBaseline[k].total++;
+    porFaixaBaseline[k].soma_prob_baseline += prob;
+    const green = d.resultado === 'green';
+    if (green) porFaixaBaseline[k].greens++;
+    // Erro absoluto por análise: |probabilidade prevista - desfecho binário|
+    // (Brier-like em pontos percentuais). Comparar a média disso entre
+    // baseline e score responde objetivamente "quem prevê melhor?".
+    somaAbsErroBaseline += Math.abs(prob - (green ? 100 : 0));
+    somaAbsErroScore += Math.abs(d.score - (green ? 100 : 0));
+  }
+  const calibracaoBaselinePoisson = Object.values(porFaixaBaseline)
+    .map(c => ({
+      faixa_baseline: c.faixa_baseline,
+      total: c.total,
+      greens: c.greens,
+      media_prob_baseline: +(c.soma_prob_baseline / c.total).toFixed(1),
+      taxa_acerto_real: +((c.greens / c.total) * 100).toFixed(1),
+      wilson_lower_bound: wilsonLowerBound(c.greens, c.total),
+      amostra_insuficiente: c.total < 15,
+    }))
+    .sort((a, b) => a.faixa_baseline.localeCompare(b.faixa_baseline));
+
   return NextResponse.json({
     total_analises: total,
     resolvidas: resolvidas.length,
@@ -148,6 +207,15 @@ export async function GET(request) {
     calibracao_por_mercado_faixa: calibracaoPorMercado,
     calibracao_por_liga: calibracaoPorLiga,
     calibracao_por_sinais_fracos: calibracaoPorSinaisFracos,
+    // Comparação baseline Poisson vs realidade — só popula pra análises
+    // feitas depois da introdução do baseline (jul/2026). erro_medio_* em
+    // pontos percentuais: menor = previsão mais próxima do desfecho real.
+    calibracao_baseline_poisson: {
+      analises_com_baseline: comBaseline.length,
+      erro_medio_baseline: comBaseline.length ? +(somaAbsErroBaseline / comBaseline.length).toFixed(1) : null,
+      erro_medio_score_ia: comBaseline.length ? +(somaAbsErroScore / comBaseline.length).toFixed(1) : null,
+      por_faixa: calibracaoBaselinePoisson,
+    },
     aviso_sinais_fracos: comSinais.length === 0
       ? 'Nenhuma análise no histórico ainda tem sinais_fracos_count gravado (coluna nova) — essa quebra só populará daqui pra frente.'
       : null,
