@@ -167,7 +167,14 @@ export async function buscarEscanteiosJogo(fixtureId, headers) {
 // paralelo e devolve a média de escanteios TOTAIS (dos dois lados somados)
 // por jogo, ignorando partidas sem esse dado disponível.
 async function mediaEscanteios(fixtures, headers) {
-  const ids = fixtures.map(f => f.fixture?.id).filter(Boolean);
+  // Só jogos encerrados nos 90 minutos: em jogos com prorrogação (AET/PEN),
+  // o endpoint de estatísticas soma os escanteios dos 120 minutos sem como
+  // separar o tempo regulamentar — incluir esses jogos inflaria a média de
+  // um dado que existe pra prever um mercado que liquida nos 90.
+  const ids = fixtures
+    .filter(f => f.fixture?.status?.short === 'FT' || f.fixture?.status?.short == null)
+    .map(f => f.fixture?.id)
+    .filter(Boolean);
   if (ids.length === 0) return null;
   const valores = await Promise.all(ids.map(id => buscarEscanteiosJogo(id, headers)));
   const validos = valores.filter(v => v != null);
@@ -419,6 +426,22 @@ async function buscarOddsMatchWinner(fixtureId, headers) {
     return null;
   }
 }
+// Placar dos 90 MINUTOS de um fixture, independente de prorrogação.
+// Em jogos decididos na prorrogação/pênaltis (status AET/PEN), o campo
+// "goals" da API-Football inclui os gols do tempo extra — mas toda a
+// estatística deste sistema existe pra prever mercados que liquidam nos 90
+// minutos, então médias, H2H e forma precisam ser calculados sobre
+// "score.fulltime" (placar ao fim do tempo normal) nesses jogos. Pra FT
+// comum, goals e score.fulltime são idênticos e goals é mais confiável
+// (sempre presente), então segue sendo a fonte padrão.
+function golsRegulamentares(f) {
+  const status = f?.fixture?.status?.short;
+  if (status === 'AET' || status === 'PEN') {
+    return { home: f?.score?.fulltime?.home ?? null, away: f?.score?.fulltime?.away ?? null };
+  }
+  return { home: f?.goals?.home ?? null, away: f?.goals?.away ?? null };
+}
+
 // Agrega uma lista de jogos (já filtrada) na perspectiva de um time
 // específico — usado pra forma geral, só em casa, só fora, e últimos 5.
 function agregarJogos(jogos, teamId) {
@@ -437,8 +460,9 @@ function agregarJogos(jogos, teamId) {
     // por padrão e atribuir um placar que pode nem ser desse time.
     if (homeId !== teamId && awayId !== teamId) continue;
     const ehCasa = homeId === teamId;
-    const golsPro = ehCasa ? f.goals?.home : f.goals?.away;
-    const golsContra = ehCasa ? f.goals?.away : f.goals?.home;
+    const placar90 = golsRegulamentares(f);
+    const golsPro = ehCasa ? placar90.home : placar90.away;
+    const golsContra = ehCasa ? placar90.away : placar90.home;
     if (golsPro == null || golsContra == null) continue;
     validos++;
     golsMarcados += golsPro;
@@ -501,7 +525,13 @@ async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios =
     if (!res.ok) return null;
     const data = await res.json();
     const jogos = (data?.response || [])
-      .filter(f => f.fixture?.status?.short === 'FT')
+      // CORREÇÃO (auditoria jul/2026): o filtro anterior só aceitava 'FT' —
+      // jogos de copa decididos na prorrogação/pênaltis (AET/PEN) sumiam
+      // COMPLETAMENTE da forma recente, encolhendo a amostra de times em
+      // mata-mata e enviesando a forma pra só jogos de liga. Agora entram,
+      // e agregarJogos usa o placar dos 90 minutos (golsRegulamentares)
+      // pra não inflar médias com gols de prorrogação.
+      .filter(f => ['FT', 'AET', 'PEN'].includes(f.fixture?.status?.short))
       // Mais recente primeiro — garante que "últimos 5" sejam de fato os 5
       // mais recentes, independente da ordem que a API devolveu.
       .sort((a, b) => new Date(b.fixture?.date) - new Date(a.fixture?.date));
@@ -527,13 +557,16 @@ async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios =
       // remove esse campo antes de montar o prompt da IA, pra não inflar o
       // tamanho da chamada em toda análise só por causa de um recurso que
       // só a grade do dia usa.
-      _jogos_recentes_brutos: jogos.slice(0, 10).map(f => ({
-        data: f.fixture?.date,
-        casa: f.teams?.home?.name,
-        fora: f.teams?.away?.name,
-        placar: `${f.goals?.home ?? '?'}-${f.goals?.away ?? '?'}`,
-        eh_casa: f.teams?.home?.id === teamId,
-      })),
+      _jogos_recentes_brutos: jogos.slice(0, 10).map(f => {
+        const placar90 = golsRegulamentares(f);
+        return {
+          data: f.fixture?.date,
+          casa: f.teams?.home?.name,
+          fora: f.teams?.away?.name,
+          placar: `${placar90.home ?? '?'}-${placar90.away ?? '?'}`,
+          eh_casa: f.teams?.home?.id === teamId,
+        };
+      }),
     };
   } catch (e) {
     logErro('buscarFormaRecente', { teamId }, e);
@@ -550,8 +583,14 @@ async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios =
 function pctGolsAteOIntervalo(porMinuto) {
   if (!porMinuto) return null;
   const faixas1T = ['0-15', '16-30', '31-45'];
+  // Faixas de prorrogação ("91-105", "106-120") ficam FORA do total: o
+  // denominador deve ser só os gols do tempo regulamentar, senão times com
+  // jogos de mata-mata têm o pct de 1T deflacionado por gols que não
+  // existem no universo dos mercados (que liquidam nos 90 minutos).
+  const faixasProrrogacao = ['91-105', '106-120'];
   let total1T = 0, totalGeral = 0;
   for (const faixa of Object.keys(porMinuto)) {
+    if (faixasProrrogacao.includes(faixa)) continue;
     const t = porMinuto[faixa]?.total;
     if (t == null) continue;
     totalGeral += t;
@@ -750,23 +789,31 @@ export async function getFootballData(jogo, opts = {}) {
   const h2hResumido = (h2h || [])
     .slice(0, 10)
     .sort((a, b) => new Date(b.fixture?.date) - new Date(a.fixture?.date))
-    .map(f => ({
-      data: f.fixture?.date,
-      // Calculado aqui no servidor, não deixado pra IA inferir da data —
-      // tirar a IA de fazer aritmética de datas evita erro bobo e deixa a
-      // instrução de "pesar o mais recente" objetiva e verificável.
-      dias_atras: f.fixture?.date ? Math.round((Date.now() - new Date(f.fixture.date).getTime()) / 86400000) : null,
-      casa: f.teams?.home?.name,
-      fora: f.teams?.away?.name,
-      placar: `${f.goals?.home ?? '?'}-${f.goals?.away ?? '?'}`,
-      placar_1t: f.score?.halftime?.home != null
-        ? `${f.score.halftime.home}-${f.score.halftime.away}`
-        : null,
-      // Indica se nesse confronto passado o mando de campo foi o mesmo do
-      // jogo analisado agora (time A em casa) — confronto direto com o mesmo
-      // mando vale mais como sinal do que um com os lados invertidos.
-      mesmo_mando_atual: f.teams?.home?.id === idA,
-    }));
+    .map(f => {
+      // Placar dos 90 minutos — mesmo racional de golsRegulamentares: um
+      // mata-mata que terminou 1-1 no tempo normal e 2-1 na prorrogação
+      // precisa aparecer como "1-1" aqui, porque tanto a IA quanto os
+      // Gates 13/18-22 leem esse placar pra prever mercados que liquidam
+      // nos 90 minutos.
+      const placar90 = golsRegulamentares(f);
+      return {
+        data: f.fixture?.date,
+        // Calculado aqui no servidor, não deixado pra IA inferir da data —
+        // tirar a IA de fazer aritmética de datas evita erro bobo e deixa a
+        // instrução de "pesar o mais recente" objetiva e verificável.
+        dias_atras: f.fixture?.date ? Math.round((Date.now() - new Date(f.fixture.date).getTime()) / 86400000) : null,
+        casa: f.teams?.home?.name,
+        fora: f.teams?.away?.name,
+        placar: `${placar90.home ?? '?'}-${placar90.away ?? '?'}`,
+        placar_1t: f.score?.halftime?.home != null
+          ? `${f.score.halftime.home}-${f.score.halftime.away}`
+          : null,
+        // Indica se nesse confronto passado o mando de campo foi o mesmo do
+        // jogo analisado agora (time A em casa) — confronto direto com o mesmo
+        // mando vale mais como sinal do que um com os lados invertidos.
+        mesmo_mando_atual: f.teams?.home?.id === idA,
+      };
+    });
 
   // A lista crua de jogos recentes é útil pro preview de estatísticas, mas
   // não precisa ir pro prompt da IA (ela já recebe os números agregados em
