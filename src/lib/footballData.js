@@ -524,6 +524,14 @@ async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios =
     );
     if (!res.ok) return null;
     const data = await res.json();
+    // AUDITORIA jul/2026: API-Football (padrão RapidAPI) pode devolver HTTP
+    // 200 com "response" vazio e um objeto "errors" preenchido quando a cota
+    // diária ou o crédito do plano pay-as-you-go acaba — isso passa direto
+    // pelo "!res.ok" acima (que só olha status HTTP) e some em silêncio.
+    if (data?.errors && Object.keys(data.errors).length > 0) {
+      logErro('buscarFormaRecente_erro_no_corpo', { teamId, errors: data.errors }, new Error('API devolveu 200 com erro no corpo'));
+      return null;
+    }
     const jogos = (data?.response || [])
       // CORREÇÃO (auditoria jul/2026): o filtro anterior só aceitava 'FT' —
       // jogos de copa decididos na prorrogação/pênaltis (AET/PEN) sumiam
@@ -609,6 +617,10 @@ async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
     );
     if (!res.ok) return null;
     const data = await res.json();
+    if (data?.errors && Object.keys(data.errors).length > 0) {
+      logErro('buscarEstatisticasTime_erro_no_corpo', { teamId, leagueId, season, errors: data.errors }, new Error('API devolveu 200 com erro no corpo'));
+      return null;
+    }
     const s = data?.response;
     if (!s || !s.fixtures) return null;
     return {
