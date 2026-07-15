@@ -753,8 +753,8 @@ export async function getFootballData(jogo, opts = {}) {
 
   const [h2h, statsA, statsB, formaA, formaB, fixtureFuturo, classificacao] = await Promise.all([
     buscarHeadToHead(idA, idB, headers),
-    buscarEstatisticasTime(idA, leagueIdA, seasonA, headers),
-    buscarEstatisticasTime(idB, leagueIdB, seasonB, headers),
+   buscarEstatisticasComFallback(idA, leagueIdA, seasonA, headers),
+    buscarEstatisticasComFallback(idB, leagueIdB, seasonB, headers),
     buscarFormaRecente(idA, headers, 10, precisaEscanteios),
     buscarFormaRecente(idB, headers, 10, precisaEscanteios),
     buscarFixtureFuturo(idA, idB, headers),
