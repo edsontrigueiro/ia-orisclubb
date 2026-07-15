@@ -657,6 +657,74 @@ async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
     return null;
   }
 }
+
+// Amostra mínima pra considerar a estatística de temporada utilizável.
+// Abaixo disso, um "total_de_jogos: 1" técnico é estatisticamente igual a
+// não ter dado nenhum — não dá pra tirar média confiável de 1-2 jogos.
+const AMOSTRA_MINIMA_ESTATISTICA_TEMPORADA = 3;
+
+// BUG (auditoria jul/2026): leagueId/season pra estatística de temporada
+// vêm do "próximo jogo" do time (buscarProximoJogo). Isso quebra sempre que
+// o próprio próximo jogo É a estreia do time numa competição nova — copa
+// continental (Champions/Europa/Conference League, fases preliminares) ou
+// qualquer torneio recém-começado pro time. Nesses casos leagueIdA/B aponta
+// pra uma competição em que o time jogou 0-1 partida na temporada, e
+// /teams/statistics não tem amostra nenhuma pra devolver — retorna null (ou
+// um objeto tecnicamente não-nulo mas com jogos_disputados baixíssimo),
+// mesmo o time tendo uma temporada inteira de jogos reais na liga doméstica.
+// Descobre a liga doméstica de pontos corridos do time (type "League", não
+// "Cup" nem confederação) via /leagues?team=X&current=true. Times normalmente
+// têm só uma liga doméstica ativa — pega a primeira do tipo "League" que a
+// API retornar. Se não achar nenhuma (raro — seleção nacional, time sem liga
+// doméstica ativa no momento), retorna null e o chamador mantém o que já tinha.
+async function buscarLigaDomestica(teamId, headers) {
+  try {
+    const res = await fetchComRetry(
+      `https://v3.football.api-sports.io/leagues?team=${teamId}&current=true`,
+      { headers }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const ligas = data?.response || [];
+    const domestica = ligas.find(l => l.league?.type === 'League');
+    if (!domestica) return null;
+    const seasonAtual = domestica.seasons?.find(s => s.current) || domestica.seasons?.[domestica.seasons.length - 1];
+    if (!seasonAtual) return null;
+    return { leagueId: domestica.league.id, season: seasonAtual.year };
+  } catch (e) {
+    logErro('buscarLigaDomestica', { teamId }, e);
+    return null;
+  }
+}
+
+// Wrapper: tenta a estatística na liga do próximo jogo primeiro (comportamento
+// original, zero custo extra no caso comum). Só dispara a chamada extra de
+// fallback quando a amostra vier nula ou pequena demais pra ser confiável —
+// aí sim busca a liga doméstica e tenta de novo nela. Se a liga doméstica for
+// a MESMA que já tentou (time cuja próxima partida é na própria liga
+// doméstica — caso comum, sem custo extra de fato nenhuma vez que já falhou
+// por outro motivo que não "liga errada"), não repete a chamada à toa.
+async function buscarEstatisticasComFallback(teamId, leagueId, season, headers) {
+  const stats = await buscarEstatisticasTime(teamId, leagueId, season, headers);
+  if (stats && (stats.jogos_disputados ?? 0) >= AMOSTRA_MINIMA_ESTATISTICA_TEMPORADA) {
+    return stats;
+  }
+
+  const ligaDomestica = await buscarLigaDomestica(teamId, headers);
+  if (!ligaDomestica) return stats;
+  if (ligaDomestica.leagueId === leagueId && ligaDomestica.season === season) return stats;
+
+  const statsDomestica = await buscarEstatisticasTime(
+    teamId, ligaDomestica.leagueId, ligaDomestica.season, headers
+  );
+  // Só substitui se o fallback realmente trouxe amostra melhor — nunca troca
+  // um dado (mesmo pequeno) por um null do fallback.
+  if (statsDomestica && (statsDomestica.jogos_disputados ?? 0) >= (stats?.jogos_disputados ?? 0)) {
+    return statsDomestica;
+  }
+  return stats;
+}
+
 // Monta um pacote de dados reais sobre o confronto. Retorna sempre um objeto
 // explícito indicando o que foi possível obter, para o prompt nunca tratar
 // dado ausente como dado real.
@@ -753,7 +821,7 @@ export async function getFootballData(jogo, opts = {}) {
 
   const [h2h, statsA, statsB, formaA, formaB, fixtureFuturo, classificacao] = await Promise.all([
     buscarHeadToHead(idA, idB, headers),
-   buscarEstatisticasComFallback(idA, leagueIdA, seasonA, headers),
+    buscarEstatisticasComFallback(idA, leagueIdA, seasonA, headers),
     buscarEstatisticasComFallback(idB, leagueIdB, seasonB, headers),
     buscarFormaRecente(idA, headers, 10, precisaEscanteios),
     buscarFormaRecente(idB, headers, 10, precisaEscanteios),
