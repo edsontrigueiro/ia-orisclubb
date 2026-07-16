@@ -1443,8 +1443,10 @@ export async function POST(request) {
     // jogos_recentes_time_a/b são só pro preview de estatísticas da grade do
     // dia — não fazem sentido no prompt da IA (ela já tem os números
     // agregados em forma_recente_time_a/b) e só inflariam o tamanho da
-    // chamada sem ajudar a análise.
-    const { jogos_recentes_time_a, jogos_recentes_time_b, ...dadosParaPrompt } = dadosReais;
+    // chamada sem ajudar a análise. _debug_raw é diagnóstico temporário
+    // (auditoria jul/2026) — vai pro dados_reais_snapshot (Supabase) via
+    // dadosReais original abaixo, mas não deve ir pro prompt da IA.
+    const { jogos_recentes_time_a, jogos_recentes_time_b, _debug_raw, ...dadosParaPrompt } = dadosReais;
     const blocoDados = dadosReais.disponivel
       ? `DADOS:\n${JSON.stringify(dadosParaPrompt)}`
       : `DADOS: indisponíveis. Motivo: ${dadosReais.motivo}`;
