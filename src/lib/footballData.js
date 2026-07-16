@@ -1,4 +1,5 @@
 import { fetchComRetry } from './fetchUtil';
+import { getCached, setCached } from './cache';
 
 // Log estruturado: facilita achar no Vercel exatamente em qual etapa e
 // confronto algo falhou, em vez de só um texto solto sem contexto.
@@ -133,6 +134,36 @@ async function buscarProximoJogo(teamId, headers) {
     logErro('buscarProximoJogo', { teamId }, e);
     return null;
   }
+}
+
+// OTIMIZAÇÃO (auditoria jul/2026 — rate limit): nome->id de time é
+// praticamente permanente (clube não muda de ID). Reanalisar o mesmo
+// confronto em mercados diferentes — comum no fluxo real (testar Dupla
+// Chance, depois +0.5 Gols, no mesmo jogo) — hoje repete essa busca do
+// zero toda vez. TTL de 24h: folgado o bastante pra cobrir qualquer sessão
+// de testes/uso do dia, sem risco de ficar desatualizado (ID de time não
+// muda de um dia pro outro).
+const TTL_ID_TIME_MS = 24 * 60 * 60 * 1000;
+async function buscarIdTimeCache(nome, headers, paisHint) {
+  const chave = `idtime::${nome.trim().toLowerCase()}::${(paisHint || '').toLowerCase()}`;
+  const cacheado = await getCached(chave, TTL_ID_TIME_MS);
+  if (cacheado) return cacheado;
+  const resultado = await buscarIdTime(nome, headers, paisHint);
+  if (resultado) await setCached(chave, resultado);
+  return resultado;
+}
+
+// Liga/temporada do "próximo jogo" muda pouco dentro do mesmo dia (só troca
+// quando o time joga) — TTL mais curto que o de ID (3h) por segurança, mas
+// ainda corta a chamada em qualquer reanálise próxima no tempo.
+const TTL_PROXIMO_JOGO_MS = 3 * 60 * 60 * 1000;
+async function buscarProximoJogoCache(teamId, headers) {
+  const chave = `proximojogo::${teamId}`;
+  const cacheado = await getCached(chave, TTL_PROXIMO_JOGO_MS);
+  if (cacheado) return cacheado;
+  const resultado = await buscarProximoJogo(teamId, headers);
+  if (resultado) await setCached(chave, resultado);
+  return resultado;
 }
 
 async function buscarHeadToHead(idA, idB, headers) {
@@ -844,8 +875,8 @@ export async function getFootballData(jogo, opts = {}) {
   }
 
   const [matchA, matchB] = await Promise.all([
-    buscarIdTime(timeA, headers, paisA),
-    buscarIdTime(timeB, headers, paisB),
+    buscarIdTimeCache(timeA, headers, paisA),
+    buscarIdTimeCache(timeB, headers, paisB),
   ]);
 
   if (!matchA || !matchB) {
@@ -859,8 +890,8 @@ export async function getFootballData(jogo, opts = {}) {
   // compartilhar o mesmo contexto de liga, ou a busca de estatísticas do
   // outro time simplesmente não acha nada.
   const [proximoJogoA, proximoJogoB] = await Promise.all([
-    buscarProximoJogo(idA, headers),
-    buscarProximoJogo(idB, headers),
+    buscarProximoJogoCache(idA, headers),
+    buscarProximoJogoCache(idB, headers),
   ]);
   const leagueIdA = proximoJogoA?.league?.id || null;
   const seasonA = proximoJogoA?.league?.season || null;
