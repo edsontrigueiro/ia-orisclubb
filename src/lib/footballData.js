@@ -516,29 +516,34 @@ function agregarJogos(jogos, teamId) {
 // partidas recentes em eliminatórias/amistosos. Esta função busca os últimos
 // jogos do time SEM esse travamento de competição, pra servir de base mais
 // robusta quando a amostra "presa" à competição atual for pequena.
-async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios = false) {
+async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios = false, debugTag = null, debugSink = null) {
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/fixtures?team=${teamId}&last=${qtd}`,
       { headers }
     );
-    if (!res.ok) return null;
+    if (!res.ok) {
+      if (debugSink && debugTag) debugSink[debugTag] = { ok: false, status: res.status };
+      return null;
+    }
     const data = await res.json();
     // DIAGNÓSTICO TEMPORÁRIO (remover depois de identificar a causa raiz):
-    // loga incondicionalmente pra ver o formato real da resposta quando nem
-    // "!res.ok" nem "errors no corpo" capturam o caso — precisa ver o corpo
-    // cru de verdade em vez de continuar hipotetizando o formato da falha.
-    console.error(JSON.stringify({
-      ts: new Date().toISOString(),
-      etapa: 'DEBUG_buscarFormaRecente',
-      teamId,
-      status: res.status,
-      temErrors: !!(data?.errors && Object.keys(data.errors).length > 0),
-      qtdResultados: Array.isArray(data?.response) ? data.response.length : `nao-array:${typeof data?.response}`,
-      results: data?.results,
-      paging: data?.paging,
-      amostraCrua: JSON.stringify(data).slice(0, 500),
-    }));
+    // grava no debugSink (que getFootballData anexa ao retorno final como
+    // "_debug_raw") em vez de só console.error — assim o corpo cru da
+    // resposta viaja até o dados_reais_snapshot salvo no Supabase, canal
+    // que já provou ser confiável pra extrair esse tipo de informação.
+    if (debugSink && debugTag) {
+      debugSink[debugTag] = {
+        ok: true,
+        status: res.status,
+        temErrors: !!(data?.errors && Object.keys(data.errors).length > 0),
+        errors: data?.errors || null,
+        qtdResultados: Array.isArray(data?.response) ? data.response.length : `nao-array:${typeof data?.response}`,
+        results: data?.results,
+        paging: data?.paging,
+        amostraCrua: JSON.stringify(data).slice(0, 500),
+      };
+    }
     if (data?.errors && Object.keys(data.errors).length > 0) {
       logErro('buscarFormaRecente_erro_no_corpo', { teamId, errors: data.errors }, new Error('API devolveu 200 com erro no corpo'));
       return null;
@@ -619,28 +624,32 @@ function pctGolsAteOIntervalo(porMinuto) {
   return +((total1T / totalGeral) * 100).toFixed(0);
 }
 
-async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
+async function buscarEstatisticasTime(teamId, leagueId, season, headers, debugTag = null, debugSink = null) {
   if (!leagueId || !season) return null;
   try {
     const res = await fetchComRetry(
       `https://v3.football.api-sports.io/teams/statistics?team=${teamId}&league=${leagueId}&season=${season}`,
       { headers }
     );
-    if (!res.ok) return null;
+    if (!res.ok) {
+      if (debugSink && debugTag) debugSink[debugTag] = { ok: false, status: res.status, leagueId, season };
+      return null;
+    }
     const data = await res.json();
     // DIAGNÓSTICO TEMPORÁRIO (remover depois de identificar a causa raiz).
-    console.error(JSON.stringify({
-      ts: new Date().toISOString(),
-      etapa: 'DEBUG_buscarEstatisticasTime',
-      teamId,
-      leagueId,
-      season,
-      status: res.status,
-      temErrors: !!(data?.errors && Object.keys(data.errors).length > 0),
-      temResponse: data?.response != null,
-      results: data?.results,
-      amostraCrua: JSON.stringify(data).slice(0, 500),
-    }));
+    if (debugSink && debugTag) {
+      debugSink[debugTag] = {
+        ok: true,
+        status: res.status,
+        leagueId,
+        season,
+        temErrors: !!(data?.errors && Object.keys(data.errors).length > 0),
+        errors: data?.errors || null,
+        temResponse: data?.response != null,
+        results: data?.results,
+        amostraCrua: JSON.stringify(data).slice(0, 500),
+      };
+    }
     if (data?.errors && Object.keys(data.errors).length > 0) {
       logErro('buscarEstatisticasTime_erro_no_corpo', { teamId, leagueId, season, errors: data.errors }, new Error('API devolveu 200 com erro no corpo'));
       return null;
@@ -740,8 +749,8 @@ async function buscarLigaDomestica(teamId, headers) {
 // a MESMA que já tentou (time cuja próxima partida é na própria liga
 // doméstica — caso comum, sem custo extra de fato nenhuma vez que já falhou
 // por outro motivo que não "liga errada"), não repete a chamada à toa.
-async function buscarEstatisticasComFallback(teamId, leagueId, season, headers) {
-  const stats = await buscarEstatisticasTime(teamId, leagueId, season, headers);
+async function buscarEstatisticasComFallback(teamId, leagueId, season, headers, debugTag = null, debugSink = null) {
+  const stats = await buscarEstatisticasTime(teamId, leagueId, season, headers, debugTag, debugSink);
   if (stats && (stats.jogos_disputados ?? 0) >= AMOSTRA_MINIMA_ESTATISTICA_TEMPORADA) {
     return stats;
   }
@@ -751,7 +760,8 @@ async function buscarEstatisticasComFallback(teamId, leagueId, season, headers) 
   if (ligaDomestica.leagueId === leagueId && ligaDomestica.season === season) return stats;
 
   const statsDomestica = await buscarEstatisticasTime(
-    teamId, ligaDomestica.leagueId, ligaDomestica.season, headers
+    teamId, ligaDomestica.leagueId, ligaDomestica.season, headers,
+    debugTag ? `${debugTag}_fallback` : null, debugSink
   );
   // Só substitui se o fallback realmente trouxe amostra melhor — nunca troca
   // um dado (mesmo pequeno) por um null do fallback.
@@ -855,12 +865,19 @@ export async function getFootballData(jogo, opts = {}) {
   const precisaClassificacao = (mercado === 'Dupla Chance' || mercado === 'Lay Empate') &&
     leagueIdA && leagueIdA === leagueIdB && seasonA === seasonB;
 
+  // DIAGNÓSTICO TEMPORÁRIO (remover depois de identificar a causa raiz do
+  // dado sumindo em silêncio): coleta o corpo cru das respostas de
+  // estatística/forma recente aqui e anexa no retorno final como
+  // "_debug_raw" — viaja até o dados_reais_snapshot no Supabase, canal já
+  // confirmado confiável, em vez de depender do Vercel Logs.
+  const _debugRaw = {};
+
   const [h2h, statsA, statsB, formaA, formaB, fixtureFuturo, classificacao] = await Promise.all([
     buscarHeadToHead(idA, idB, headers),
-    buscarEstatisticasComFallback(idA, leagueIdA, seasonA, headers),
-    buscarEstatisticasComFallback(idB, leagueIdB, seasonB, headers),
-    buscarFormaRecente(idA, headers, 10, precisaEscanteios),
-    buscarFormaRecente(idB, headers, 10, precisaEscanteios),
+    buscarEstatisticasComFallback(idA, leagueIdA, seasonA, headers, 'estatisticas_a', _debugRaw),
+    buscarEstatisticasComFallback(idB, leagueIdB, seasonB, headers, 'estatisticas_b', _debugRaw),
+    buscarFormaRecente(idA, headers, 10, precisaEscanteios, 'forma_a', _debugRaw),
+    buscarFormaRecente(idB, headers, 10, precisaEscanteios, 'forma_b', _debugRaw),
     buscarFixtureFuturo(idA, idB, headers),
     precisaClassificacao ? buscarClassificacao(leagueIdA, seasonA, idA, idB, headers) : Promise.resolve(null),
   ]);
@@ -1005,5 +1022,8 @@ export async function getFootballData(jogo, opts = {}) {
     // que normalmente vira prompt (analyze/route.js ignora esses 2 campos).
     jogos_recentes_time_a: jogosRecentesA,
     jogos_recentes_time_b: jogosRecentesB,
+    // DIAGNÓSTICO TEMPORÁRIO — remover este campo depois de resolver a
+    // causa raiz. Não é usado pelo prompt da IA nem pelos Gates.
+    _debug_raw: _debugRaw,
   };
 }
