@@ -11,6 +11,19 @@ export function logErro(etapa, contexto, erro) {
   }));
 }
 
+// DIAGNÓSTICO TEMPORÁRIO (auditoria jul/2026): extrai os headers de limite
+// que a API-Football manda em TODA resposta — inclusive nas que deram 429,
+// que é justamente onde esses números mais importam. Nomes de header não
+// diferenciam maiúscula/minúscula (Headers.get já trata isso).
+function headersLimiteApi(res) {
+  return {
+    limite_dia: res.headers?.get('x-ratelimit-requests-limit') ?? null,
+    restante_dia: res.headers?.get('x-ratelimit-requests-remaining') ?? null,
+    limite_minuto: res.headers?.get('x-ratelimit-limit') ?? null,
+    restante_minuto: res.headers?.get('x-ratelimit-remaining') ?? null,
+  };
+}
+
 function parseTimes(jogo) {
   // Defesa extra: mesmo que o handler já valide tipo antes de chamar aqui,
   // não custa blindar a função em si contra input não-string.
@@ -523,7 +536,7 @@ async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios =
       { headers }
     );
     if (!res.ok) {
-      if (debugSink && debugTag) debugSink[debugTag] = { ok: false, status: res.status };
+      if (debugSink && debugTag) debugSink[debugTag] = { ok: false, status: res.status, headersLimite: headersLimiteApi(res) };
       return null;
     }
     const data = await res.json();
@@ -536,6 +549,7 @@ async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios =
       debugSink[debugTag] = {
         ok: true,
         status: res.status,
+        headersLimite: headersLimiteApi(res),
         temErrors: !!(data?.errors && Object.keys(data.errors).length > 0),
         errors: data?.errors || null,
         qtdResultados: Array.isArray(data?.response) ? data.response.length : `nao-array:${typeof data?.response}`,
@@ -632,7 +646,7 @@ async function buscarEstatisticasTime(teamId, leagueId, season, headers, debugTa
       { headers }
     );
     if (!res.ok) {
-      if (debugSink && debugTag) debugSink[debugTag] = { ok: false, status: res.status, leagueId, season };
+      if (debugSink && debugTag) debugSink[debugTag] = { ok: false, status: res.status, leagueId, season, headersLimite: headersLimiteApi(res) };
       return null;
     }
     const data = await res.json();
@@ -643,6 +657,7 @@ async function buscarEstatisticasTime(teamId, leagueId, season, headers, debugTa
         status: res.status,
         leagueId,
         season,
+        headersLimite: headersLimiteApi(res),
         temErrors: !!(data?.errors && Object.keys(data.errors).length > 0),
         errors: data?.errors || null,
         temResponse: data?.response != null,
