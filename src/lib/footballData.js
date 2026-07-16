@@ -524,10 +524,21 @@ async function buscarFormaRecente(teamId, headers, qtd = 10, incluirEscanteios =
     );
     if (!res.ok) return null;
     const data = await res.json();
-    // AUDITORIA jul/2026: API-Football (padrão RapidAPI) pode devolver HTTP
-    // 200 com "response" vazio e um objeto "errors" preenchido quando a cota
-    // diária ou o crédito do plano pay-as-you-go acaba — isso passa direto
-    // pelo "!res.ok" acima (que só olha status HTTP) e some em silêncio.
+    // DIAGNÓSTICO TEMPORÁRIO (remover depois de identificar a causa raiz):
+    // loga incondicionalmente pra ver o formato real da resposta quando nem
+    // "!res.ok" nem "errors no corpo" capturam o caso — precisa ver o corpo
+    // cru de verdade em vez de continuar hipotetizando o formato da falha.
+    console.error(JSON.stringify({
+      ts: new Date().toISOString(),
+      etapa: 'DEBUG_buscarFormaRecente',
+      teamId,
+      status: res.status,
+      temErrors: !!(data?.errors && Object.keys(data.errors).length > 0),
+      qtdResultados: Array.isArray(data?.response) ? data.response.length : `nao-array:${typeof data?.response}`,
+      results: data?.results,
+      paging: data?.paging,
+      amostraCrua: JSON.stringify(data).slice(0, 500),
+    }));
     if (data?.errors && Object.keys(data.errors).length > 0) {
       logErro('buscarFormaRecente_erro_no_corpo', { teamId, errors: data.errors }, new Error('API devolveu 200 com erro no corpo'));
       return null;
