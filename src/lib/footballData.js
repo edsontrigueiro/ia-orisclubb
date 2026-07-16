@@ -628,6 +628,19 @@ async function buscarEstatisticasTime(teamId, leagueId, season, headers) {
     );
     if (!res.ok) return null;
     const data = await res.json();
+    // DIAGNÓSTICO TEMPORÁRIO (remover depois de identificar a causa raiz).
+    console.error(JSON.stringify({
+      ts: new Date().toISOString(),
+      etapa: 'DEBUG_buscarEstatisticasTime',
+      teamId,
+      leagueId,
+      season,
+      status: res.status,
+      temErrors: !!(data?.errors && Object.keys(data.errors).length > 0),
+      temResponse: data?.response != null,
+      results: data?.results,
+      amostraCrua: JSON.stringify(data).slice(0, 500),
+    }));
     if (data?.errors && Object.keys(data.errors).length > 0) {
       logErro('buscarEstatisticasTime_erro_no_corpo', { teamId, leagueId, season, errors: data.errors }, new Error('API devolveu 200 com erro no corpo'));
       return null;
