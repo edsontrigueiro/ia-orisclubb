@@ -1300,13 +1300,16 @@ async function verificarExposicaoCorrelacionada(userId, idTimeA, idTimeB) {
 // independente do usuário ter pegado, passado, ou nem decidido nada ainda —
 // é o dado que falta pra calibrar o sistema com o universo completo de
 // sinais, não só com os que foram escolhidos pra apostar.
-async function registrarHistoricoAnalise(userId, jogo, mercado, result, min, dadosReais) {
+async function registrarHistoricoAnalise(userId, jogo, mercado, result, min, dadosReais, origem = 'manual') {
   const db = getSupabaseAdmin();
   const { error } = await db.from('analises_historico').insert({
     user_id: userId,
     evento: result.evento || jogo,
     competicao: result.competicao || null,
     mercado,
+    // 'manual' | 'scanner' — exige supabase/migration_scanner.sql aplicada
+    // ANTES deste deploy, senão todo insert do histórico passa a falhar.
+    origem,
     score: result.score,
     min_score: min,
     aprovado: !!result.aprovado,
@@ -1403,10 +1406,19 @@ export async function POST(request) {
   // Capturados aqui fora, antes do try, porque request.clone() falha com
   // "unusable" se chamado depois que o body já foi lido — então o fallback
   // de erro não pode depender de reconstruir a request lá no catch.
-  let jogo, mercado;
+  let jogo, mercado, origem;
 
   try {
-    ({ jogo, mercado } = await request.json());
+    ({ jogo, mercado, origem } = await request.json());
+    // Origem do disparo: 'manual' (aba Análises, comportamento histórico) ou
+    // 'scanner' (varredura de grade). Persistida em analises_historico pra
+    // permitir calibração SEPARADA — sinal vindo de varredura em massa tem
+    // viés de seleção próprio (winner's curse: o ranking puxa pro topo os
+    // maiores erros do modelo junto com as melhores oportunidades) e precisa
+    // provar taxa de acerto por conta própria antes de valer como o manual.
+    // Qualquer valor fora dos dois esperados vira 'manual' — nunca confiar
+    // em string livre vinda do cliente direto pro banco.
+    origem = origem === 'scanner' ? 'scanner' : 'manual';
     if (!jogo || !mercado || typeof jogo !== 'string' || typeof mercado !== 'string')
       return NextResponse.json({ error: 'Jogo e mercado obrigatórios (texto).' }, { status: 400 });
     if (!MERCADOS[mercado])
@@ -1544,7 +1556,7 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
     // não ensina nada sobre calibração de score, só suja a Auditoria com
     // sinal sem nenhuma previsão de verdade por trás.
     if (dadosReais.disponivel) {
-      registrarHistoricoAnalise(session.userId, jogo, mercado, result, min, dadosReais)
+      registrarHistoricoAnalise(session.userId, jogo, mercado, result, min, dadosReais, origem)
         .catch(e => logErro('analises_historico_insert', { jogo, mercado }, e));
     }
 
