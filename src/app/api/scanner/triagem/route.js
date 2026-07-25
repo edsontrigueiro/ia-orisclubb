@@ -43,6 +43,18 @@ const LIGAS_COBERTAS = new Set([
   11,                     // Sul-Americana
   88, 94,                 // Eredivisie, Primeira Liga (Portugal)
   128,                    // Liga Profesional (Argentina)
+  // Ligas de calendário "verão europeu" — sem elas, a triagem em jun-ago
+  // descarta quase a grade inteira (as top europeias estão de férias):
+  253,                    // MLS (EUA)
+  262,                    // Liga MX (México)
+  239,                    // Primera A (Colômbia)
+  265,                    // Primera División (Chile)
+  98,                     // J1 League (Japão)
+  292,                    // K League 1 (Coreia do Sul)
+  103, 113, 119,          // Eliteserien (Noruega), Allsvenskan (Suécia), Superliga (Dinamarca)
+  244,                    // Veikkausliiga (Finlândia)
+  106,                    // Ekstraklasa (Polônia)
+  40,                     // Championship (Inglaterra — volta cedo, início de agosto)
 ]);
 
 // Teto de aptos por varredura. Protege a cota (40 × ~8 chamadas ≈ 320
@@ -50,6 +62,17 @@ const LIGAS_COBERTAS = new Set([
 // 7 min). Quem passa do corte NÃO é reprovado — é descartado com motivo
 // explícito de corte, pra ficar claro que foi cota, não mérito.
 const MAX_APTOS = 40;
+
+// Tolerância da triagem, em pontos percentuais ABAIXO do mínimo da
+// estratégia. Racional: exigir margem >= 0 (odd de mercado já acima do
+// mínimo) seria MAIS rígido que o próprio pipeline — no /api/analyze o
+// Gate 7 (essa mesma comparação) é informativo, não bloqueante. A zona
+// logo abaixo do mínimo é justamente onde o dado real pode divergir do
+// mercado a favor — cortar ela na porta mata a razão de existir da
+// análise. 6pp é o ponto de partida; subir = mais aptos e mais cota
+// gasta, descer = triagem mais dura. O corte de verdade continua sendo
+// dos Gates 0-25 + IA no estágio caro.
+const TOLERANCIA_MARGEM_PP = 6;
 
 // Teto de páginas de odds (20 fixtures/página na API-Football). 30 páginas
 // cobrem 600 jogos com odds — mais que qualquer grade real das ligas
@@ -285,10 +308,10 @@ export async function GET(request) {
         descartes.push({ evento, liga: j.liga, motivo: 'Odds publicadas não cobrem nenhum mercado das estratégias' });
         continue;
       }
-      if (melhor.margem < 0) {
+      if (melhor.margem < -TOLERANCIA_MARGEM_PP) {
         descartes.push({
           evento, liga: j.liga,
-          motivo: `Melhor mercado (${melhor.mercado}) precificado ${Math.abs(melhor.margem).toFixed(1)}pp ABAIXO do mínimo da estratégia`,
+          motivo: `Melhor mercado (${melhor.mercado}) precificado ${Math.abs(melhor.margem).toFixed(1)}pp abaixo do mínimo — fora da tolerância de ${TOLERANCIA_MARGEM_PP}pp da triagem`,
         });
         continue;
       }
