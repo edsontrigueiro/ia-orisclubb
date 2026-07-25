@@ -3,7 +3,7 @@ import { useState, Suspense } from 'react';
 import { useRouter, useSearchParams } from 'next/navigation';
 import Link from 'next/link';
 import { saveSession } from '@/lib/clientSession';
-import { C, FONT_DISPLAY, FONT_BODY } from '@/lib/theme';
+import { C, FONT_DISPLAY, FONT_BODY, FONT_MONO, LOGO_SRC } from '@/lib/theme';
 
 const MSGS = {
   'sessao-expirada': 'Sua sessão expirou. Faça login novamente.',
@@ -49,16 +49,9 @@ function LoginForm() {
     <div style={S.page}>
       <div style={S.wrap}>
         <div style={S.logo}>
-          {/* Marca: o anel de confiança que reaparece no painel de resultado */}
-          <svg width="38" height="38" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="1" y="1" width="42" height="42" rx="11" fill={C.orangeDim} stroke={C.orange} strokeWidth="1.5"/>
-            <circle cx="22" cy="22" r="11" fill="none" stroke={C.orange} strokeWidth="2.2" strokeDasharray="52 17" strokeLinecap="round" transform="rotate(-90 22 22)"/>
-            <circle cx="22" cy="11" r="2" fill={C.orange}/>
-          </svg>
-          <div>
-            <div style={S.brand}>ORIS<span style={{color:C.orange}}> CLUB</span></div>
-            <div style={S.brandSub}>ANÁLISE DE SINAIS COM IA</div>
-          </div>
+          {/* Logo original do Brand Content Playbook — mesma marca da landing */}
+          <img src={LOGO_SRC} alt="Oris Club" style={{height:'34px',width:'auto',display:'block'}}/>
+          <div style={S.brandSub}>// Camada de inteligência</div>
         </div>
 
         <div style={S.card}>
@@ -105,7 +98,7 @@ function LoginForm() {
             </div>
           </div>
         </div>
-        <div style={S.copy}>© 2026 Oris Club · Análise de apostas com IA</div>
+        <div style={S.copy}>© 2026 Oris Club · Infraestrutura para operações esportivas</div>
       </div>
     </div>
   );
@@ -114,20 +107,20 @@ function LoginForm() {
 const S = {
   page:{minHeight:'100vh',background:C.bg,display:'flex',alignItems:'center',justifyContent:'center',padding:'20px',fontFamily:FONT_BODY},
   wrap:{width:'100%',maxWidth:'420px'},
-  logo:{display:'flex',alignItems:'center',gap:'12px',justifyContent:'center',marginBottom:'32px'},
-  brand:{fontSize:'22px',fontWeight:800,color:C.text,letterSpacing:'-.3px',fontFamily:FONT_DISPLAY},
-  brandSub:{fontSize:'9px',fontWeight:700,color:C.muted2,letterSpacing:'2.5px',marginTop:'2px'},
-  card:{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',overflow:'hidden',boxShadow:'0 24px 64px rgba(0,0,0,.6)'},
-  cardTop:{height:'2px',background:`linear-gradient(90deg,${C.orange},${C.orangeGlow})`},
-  title:{fontSize:'20px',fontWeight:700,color:C.text,marginBottom:'5px',letterSpacing:'-.3px',fontFamily:FONT_DISPLAY},
+  logo:{display:'flex',flexDirection:'column',alignItems:'center',gap:'10px',justifyContent:'center',marginBottom:'34px'},
+  brand:{fontSize:'22px',fontWeight:900,color:C.text,letterSpacing:'-.01em',textTransform:'uppercase',fontFamily:FONT_DISPLAY},
+  brandSub:{fontFamily:FONT_MONO,fontSize:'10px',fontWeight:500,color:C.muted2,letterSpacing:'2.5px',textTransform:'uppercase'},
+  card:{background:C.bg2,border:`1px solid ${C.border}`,borderRadius:0,overflow:'hidden'},
+  cardTop:{height:'2px',background:C.orange},
+  title:{fontSize:'21px',fontWeight:900,color:C.text,marginBottom:'6px',letterSpacing:'-.01em',textTransform:'uppercase',fontFamily:FONT_DISPLAY},
   sub:{fontSize:'13px',color:C.muted,marginBottom:'24px'},
   fgroup:{marginBottom:'16px'},
-  label:{display:'block',fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1.5px',marginBottom:'7px'},
-  inp:{width:'100%',background:C.bg4,border:`1px solid ${C.border}`,color:C.text,borderRadius:'8px',padding:'11px 13px',fontSize:'14px',outline:'none',boxSizing:'border-box',fontFamily:'inherit',transition:'border .18s'},
+  label:{display:'block',fontFamily:FONT_MONO,fontSize:'10px',fontWeight:500,color:C.muted2,letterSpacing:'1.8px',marginBottom:'8px'},
+  inp:{width:'100%',background:C.bg3,border:`1px solid ${C.border}`,color:C.text,borderRadius:0,padding:'11px 13px',fontSize:'14px',outline:'none',boxSizing:'border-box',fontFamily:'inherit',transition:'border .18s'},
   eyeBtn:{position:'absolute',right:'12px',top:'50%',transform:'translateY(-50%)',background:'none',border:'none',color:C.muted,cursor:'pointer',padding:'2px',display:'flex',alignItems:'center'},
-  err:{background:C.redDim,border:`1px solid rgba(255,77,77,.25)`,borderRadius:'8px',padding:'10px 12px',fontSize:'12.5px',color:C.red,marginBottom:'16px'},
-  info:{background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,borderRadius:'8px',padding:'10px 12px',fontSize:'12.5px',color:C.orangeGlow,marginBottom:'16px'},
-  btn:{width:'100%',background:C.orange,color:'#0A0A0A',border:'none',borderRadius:'8px',padding:'13px',fontSize:'14px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginTop:'4px',transition:'all .18s'},
+  err:{background:C.redDim,border:`1px solid rgba(255,77,77,.25)`,borderRadius:'2px',padding:'10px 12px',fontSize:'12.5px',color:C.red,marginBottom:'16px'},
+  info:{background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,borderRadius:'2px',padding:'10px 12px',fontSize:'12.5px',color:C.orangeGlow,marginBottom:'16px'},
+  btn:{width:'100%',background:C.orange,color:'#0A0A0A',border:'none',borderRadius:0,padding:'14px',fontSize:'13px',fontWeight:800,textTransform:'uppercase',letterSpacing:'.04em',cursor:'pointer',fontFamily:FONT_DISPLAY,marginTop:'6px',boxShadow:'4px 4px 0 #000',transition:'all .18s'},
   footer:{textAlign:'center',marginTop:'20px',fontSize:'13px',color:C.muted},
   copy:{textAlign:'center',marginTop:'20px',fontSize:'11px',color:C.muted3},
 };
