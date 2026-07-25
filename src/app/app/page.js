@@ -1,6 +1,6 @@
 'use client';
 export const dynamic = 'force-dynamic';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { authFetch, getStoredUser, clearSession } from '@/lib/clientSession';
 import { C, FONT_DISPLAY, FONT_BODY, FONT_MONO } from '@/lib/theme';
@@ -24,6 +24,10 @@ const NAV = [
   { id:'historico',   label:'Histórico',    icon:'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z' },
   { id:'auditoria',   label:'Auditoria',    icon:'M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11' },
   { id:'desempenho',  label:'Desempenho',   icon:'M23 6 13.5 15.5 8.5 10.5 1 18 M17 6 23 6 23 12' },
+  // Em teste (beta): varredura da grade do dia. Aba EXTRA — não substitui
+  // Análises nem Jogos do Dia; se a calibração scanner-vs-manual não se
+  // sustentar, remover esta linha desliga a feature inteira do rail.
+  { id:'scanner',     label:'Scanner β',    icon:'M12 2a10 10 0 1 0 10 10 M12 6a6 6 0 1 0 6 6 M12 12l6.5-6.5' },
 ];
 
 function fmt(v) { return v?.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) ?? '—'; }
@@ -232,6 +236,110 @@ export default function App() {
   // Saúde do sistema (substitui o "IA Online" estático por uma checagem real)
   const [health, setHealth] = useState(null);
 
+  // ── SCANNER DE GRADE (beta) ──
+  // Triagem barata via /api/scanner/triagem; a análise completa reusa o
+  // /api/analyze existente, chamado daqui um jogo por vez (o frontend É o
+  // orquestrador — sem cron novo, sem fila no backend, e cada análise cai
+  // em analises_historico com origem 'scanner' pra calibração separada).
+  // Custo de manter a aba aberta durante a varredura: aceitável pra
+  // ferramenta interna; se um dia virar feature de assinante, isso migra
+  // pra fila de verdade no backend.
+  const [scanTriagem, setScanTriagem] = useState(null);
+  const [scanTriagemLoading, setScanTriagemLoading] = useState(false);
+  const [scanErro, setScanErro] = useState(null);
+  const [scanRodando, setScanRodando] = useState(false);
+  const [scanIdx, setScanIdx] = useState(0);
+  const [scanResultados, setScanResultados] = useState([]);
+  const [scanDetalhe, setScanDetalhe] = useState(null);
+  const [scanRegistrando, setScanRegistrando] = useState(null);
+  const [scanRegistrados, setScanRegistrados] = useState({});
+  const [scanDispensados, setScanDispensados] = useState({});
+  const [scanVerDescartes, setScanVerDescartes] = useState(false);
+  const [scanVerReprovados, setScanVerReprovados] = useState(false);
+  // Ref (não state) de propósito: o loop assíncrono lê o valor ATUAL na
+  // hora de decidir se continua — state capturado na closure não serviria.
+  const scanCancelRef = useRef(false);
+
+  async function carregarTriagem(refresh = false) {
+    setScanTriagemLoading(true); setScanErro(null);
+    if (refresh) { setScanResultados([]); setScanRegistrados({}); setScanDispensados({}); }
+    try {
+      const { res, sessionExpired } = await authFetch(`/api/scanner/triagem${refresh ? '?refresh=1' : ''}`);
+      if (sessionExpired) { goToLoginExpired(); return; }
+      const data = await res.json();
+      if (!res.ok) { setScanErro(data?.error || 'Falha na triagem da grade.'); return; }
+      setScanTriagem(data);
+    } catch { setScanErro('Erro de conexão na triagem.'); }
+    finally { setScanTriagemLoading(false); }
+  }
+
+  async function rodarScanner() {
+    const aptos = (scanTriagem?.aptos || []).filter(a => !scanDispensados[a.fixtureId]);
+    if (!aptos.length || scanRodando) return;
+    scanCancelRef.current = false;
+    setScanRodando(true); setScanResultados([]); setScanIdx(0); setScanErro(null);
+    // Sequencial DE PROPÓSITO: cada /api/analyze já dispara 7-9 chamadas de
+    // API-Football por dentro (serializadas pelo semáforo do fetchUtil) +
+    // 1 chamada de IA. Paralelizar aqui só empilharia timeout em cima do
+    // rate limit — a espera é o comportamento correto, não uma limitação.
+    for (let i = 0; i < aptos.length; i++) {
+      if (scanCancelRef.current) break;
+      const item = aptos[i];
+      setScanIdx(i);
+      try {
+        const { res, sessionExpired } = await authFetch('/api/analyze', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ jogo: `${item.timeA} vs ${item.timeB}`, mercado: item.mercado, origem: 'scanner' }),
+        });
+        if (sessionExpired) { setScanRodando(false); goToLoginExpired(); return; }
+        const data = await res.json();
+        setScanResultados(prev => [...prev, { item, result: res.ok ? data : null, erro: !res.ok }]);
+      } catch {
+        setScanResultados(prev => [...prev, { item, result: null, erro: true }]);
+      }
+    }
+    setScanIdx(aptos.length);
+    setScanRodando(false);
+  }
+
+  function pararScanner() { scanCancelRef.current = true; }
+
+  // "Aprovar" do ranking = registrar como sinal 'pegar', mesmo mapeamento do
+  // saveSignal da aba Análises. Odd vem da estimativa da análise como ponto
+  // de partida — o trader ajusta a real na corretora; stake fica em aberto.
+  async function registrarSinalScanner(entry) {
+    const r = entry.result;
+    if (!r || scanRegistrando) return;
+    setScanRegistrando(entry.item.fixtureId);
+    try {
+      const body = {
+        evento: r.evento || entry.item.evento,
+        competicao: r.competicao,
+        mercado: entry.item.mercado,
+        score: r.score,
+        min_score: r._minScore ?? null,
+        criterios_ok: r.criterios_atendidos || [],
+        criterios_no: r.criterios_nao_atendidos || [],
+        alertas: r.alertas || [],
+        insight: r.insight,
+        resumo: r.resumo,
+        decisao: 'pegar',
+        odd: parseFloat(r.odds_estimada) || null,
+        stake: null,
+      };
+      const { res, sessionExpired } = await authFetch('/api/signals', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (sessionExpired) { goToLoginExpired(); return; }
+      if (res.ok) setScanRegistrados(prev => ({ ...prev, [entry.item.fixtureId]: true }));
+      else setScanErro('Falha ao registrar o sinal — tente de novo.');
+    } catch { setScanErro('Erro de conexão ao registrar o sinal.'); }
+    finally { setScanRegistrando(null); }
+  }
+
   useEffect(() => {
     if (!authReady) return;
     (async () => {
@@ -264,6 +372,7 @@ export default function App() {
     if (authReady && tab === 'desempenho') { loadSignals(); loadAnalisesHistorico(); }
     if (authReady && tab === 'auditoria') loadAnalisesHistorico();
     if (authReady && tab === 'jogosdodia' && jogosDoDia.length === 0 && !jogosError) loadJogosDoDia();
+    if (authReady && tab === 'scanner' && !scanTriagem && !scanErro && !scanTriagemLoading) carregarTriagem();
   }, [tab, authReady]);
 
   function goToLoginExpired() {
@@ -1567,6 +1676,165 @@ export default function App() {
               )}
             </div>
           )}
+          {/* ════ SCANNER DE GRADE (BETA) ════ */}
+          {tab === 'scanner' && (() => {
+            const aptosAtivos = (scanTriagem?.aptos || []).filter(a => !scanDispensados[a.fixtureId]);
+            const aprovados = scanResultados
+              .filter(r => !r.erro && r.result?.aprovado && !scanDispensados[r.item.fixtureId])
+              .sort((a, b) => ((b.result.score - (b.result._minScore ?? 0)) - (a.result.score - (a.result._minScore ?? 0))));
+            const reprovados = scanResultados.filter(r => r.erro || !r.result?.aprovado);
+            const totalLoop = aptosAtivos.length;
+            const emAndamento = scanRodando && totalLoop > 0;
+            const itemAtual = emAndamento ? aptosAtivos[Math.min(scanIdx, totalLoop - 1)] : null;
+            const terminou = !scanRodando && scanResultados.length > 0;
+            return (
+            <div>
+              <div style={{fontSize:'10px',fontWeight:700,color:C.orange,letterSpacing:'2px',textTransform:'uppercase',marginBottom:'6px'}}>Scanner de Grade · Beta</div>
+              <div style={{fontSize:'21px',fontWeight:800,letterSpacing:'-.3px',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Varredura do dia</div>
+              <div style={{fontSize:'13px',color:C.muted,marginBottom:'18px'}}>Triagem barata da grade inteira, análise completa só nos aptos — cada sinal marcado com origem "scanner" pra calibração separada. Em teste: nada publica sozinho.</div>
+
+              {scanErro && <div style={{background:C.redDim,border:`1px solid ${C.red}`,borderRadius:'10px',padding:'10px 14px',fontSize:'12px',color:C.red,marginBottom:'14px'}}>{scanErro}</div>}
+
+              <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
+                <button onClick={()=>carregarTriagem(true)} disabled={scanTriagemLoading||scanRodando} style={{background:C.bg3,color:C.text,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'10px 18px',fontSize:'12px',fontWeight:600,cursor:(scanTriagemLoading||scanRodando)?'default':'pointer',fontFamily:'inherit',opacity:(scanTriagemLoading||scanRodando)?.5:1}}>
+                  {scanTriagemLoading ? 'Rodando triagem…' : 'Refazer triagem'}
+                </button>
+                {!scanRodando ? (
+                  <button onClick={rodarScanner} disabled={!aptosAtivos.length||scanTriagemLoading} style={{background:C.orange,color:'#0A0A0A',border:'none',borderRadius:'8px',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:aptosAtivos.length?'pointer':'default',fontFamily:'inherit',opacity:aptosAtivos.length?1:.5}}>
+                    Analisar {aptosAtivos.length || ''} aptos
+                  </button>
+                ) : (
+                  <button onClick={pararScanner} style={{background:C.redDim,color:C.red,border:`1px solid ${C.red}`,borderRadius:'8px',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+                    Parar após o jogo atual
+                  </button>
+                )}
+              </div>
+
+              {scanTriagem && (
+                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))',gap:'10px',marginBottom:'16px'}}>
+                  {[
+                    ['Jogos na grade', scanTriagem.totalGrade, C.text],
+                    ['Aptos na triagem', aptosAtivos.length, C.text],
+                    ['Analisados', `${Math.min(scanResultados.length, totalLoop)}/${totalLoop}`, C.text],
+                    ['Aprovados', aprovados.length, aprovados.length ? C.green : C.muted],
+                  ].map(([label, valor, cor]) => (
+                    <div key={label} style={{background:C.bg2,borderRadius:'10px',padding:'12px 14px'}}>
+                      <div style={{fontSize:'11px',color:C.muted,marginBottom:'4px'}}>{label}</div>
+                      <div style={{fontSize:'20px',fontWeight:800,color:cor,fontFamily:FONT_DISPLAY}}>{valor}</div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {emAndamento && (
+                <div style={{background:C.bg2,border:`1px solid ${C.border}`,borderRadius:'12px',padding:'14px 16px',marginBottom:'18px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',color:C.muted,marginBottom:'8px'}}>
+                    <span>Analisando {Math.min(scanIdx + 1, totalLoop)} de {totalLoop} — {itemAtual ? `${itemAtual.evento} (${itemAtual.mercado})` : ''}</span>
+                    <span>~{Math.max(1, Math.round((totalLoop - scanIdx) * 10 / 60))} min restantes</span>
+                  </div>
+                  <div style={{height:'6px',background:C.bg3,borderRadius:'3px',overflow:'hidden'}}>
+                    <div style={{height:'100%',width:`${Math.round((Math.min(scanResultados.length,totalLoop)/Math.max(totalLoop,1))*100)}%`,background:C.orange,borderRadius:'3px',transition:'width .3s'}}/>
+                  </div>
+                </div>
+              )}
+
+              {(aprovados.length > 0 || terminou) && (
+                <div style={{marginBottom:'18px'}}>
+                  <div style={{fontSize:'14px',fontWeight:700,marginBottom:'2px'}}>Melhores oportunidades</div>
+                  <div style={{fontSize:'12px',color:C.muted,marginBottom:'10px'}}>Ranqueadas por folga sobre o mínimo · aguardando sua revisão — nada foi publicado</div>
+                  {aprovados.length === 0 && <div style={{fontSize:'12px',color:C.muted,background:C.bg2,borderRadius:'10px',padding:'14px'}}>Nenhum sinal aprovado nesta varredura. Isso é o sistema funcionando — grade fraca não vira oportunidade na marra.</div>}
+                  {aprovados.map(entry => {
+                    const r = entry.result;
+                    const fid = entry.item.fixtureId;
+                    const folga = r.score - (r._minScore ?? 0);
+                    const temAlerta = (r.alertas || []).length > 0;
+                    return (
+                      <div key={fid} style={{background:C.bg2,border:`1px solid ${temAlerta ? C.orangeBorder : C.border}`,borderRadius:'12px',padding:'14px 16px',marginBottom:'10px'}}>
+                        <div style={{display:'flex',justifyContent:'space-between',gap:'10px',flexWrap:'wrap',alignItems:'flex-start'}}>
+                          <div style={{minWidth:0}}>
+                            <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
+                              <span style={{fontSize:'14px',fontWeight:700}}>{r.evento || entry.item.evento}</span>
+                              <span style={{background:C.greenDim,color:C.green,fontSize:'11px',fontWeight:700,padding:'2px 10px',borderRadius:'10px'}}>Score {r.score}</span>
+                              {folga <= 2 && <span style={{background:C.orangeDim,color:C.orange,fontSize:'11px',fontWeight:700,padding:'2px 10px',borderRadius:'10px'}}>no limite</span>}
+                              <span style={{background:C.bg3,color:C.muted,fontSize:'11px',padding:'2px 10px',borderRadius:'10px'}}>scanner</span>
+                            </div>
+                            <div style={{fontSize:'12px',color:C.muted,marginTop:'4px'}}>
+                              {(r.competicao || entry.item.liga)} · {entry.item.mercado} · odd est. {r.odds_estimada || '—'} · triagem +{entry.item.margem}pp
+                            </div>
+                            {temAlerta && <div style={{fontSize:'11px',color:C.orange,marginTop:'6px'}}>{(r.alertas||[]).length} alerta(s) — abra os detalhes antes de registrar</div>}
+                            {scanDetalhe === fid && (
+                              <div style={{marginTop:'10px',borderTop:`1px solid ${C.border}`,paddingTop:'10px',fontSize:'12px',color:C.text,lineHeight:1.6}}>
+                                <div style={{marginBottom:'6px'}}>{r.insight}</div>
+                                <div style={{color:C.muted,marginBottom:temAlerta?'8px':0}}>{r.resumo}</div>
+                                {(r.alertas||[]).map((a,i)=>(<div key={i} style={{fontSize:'11px',color:C.orange,marginTop:'4px'}}>• {a}</div>))}
+                              </div>
+                            )}
+                          </div>
+                          <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
+                            <button onClick={()=>setScanDetalhe(scanDetalhe===fid?null:fid)} style={{background:C.bg3,color:C.text,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}>
+                              {scanDetalhe===fid?'Fechar':'Detalhes'}
+                            </button>
+                            {scanRegistrados[fid] ? (
+                              <span style={{color:C.green,fontSize:'12px',fontWeight:700,alignSelf:'center'}}>✓ registrado</span>
+                            ) : (
+                              <button onClick={()=>registrarSinalScanner(entry)} disabled={scanRegistrando===fid} style={{background:C.greenDim,color:C.green,border:`1px solid ${C.green}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',opacity:scanRegistrando===fid?.5:1}}>
+                                {scanRegistrando===fid?'Registrando…':'Registrar sinal'}
+                              </button>
+                            )}
+                            <button onClick={()=>setScanDispensados(prev=>({...prev,[fid]:true}))} style={{background:'none',color:C.muted,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',cursor:'pointer',fontFamily:'inherit'}}>
+                              Dispensar
+                            </button>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                  {reprovados.length > 0 && (
+                    <div style={{marginTop:'6px'}}>
+                      <button onClick={()=>setScanVerReprovados(v=>!v)} style={{background:'none',border:'none',color:C.muted,fontSize:'12px',cursor:'pointer',fontFamily:'inherit',padding:0}}>
+                        {scanVerReprovados?'▾':'▸'} {reprovados.length} reprovado(s)/erro(s) na análise completa — já registrados na Auditoria
+                      </button>
+                      {scanVerReprovados && reprovados.map((entry,i)=>(
+                        <div key={i} style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',color:C.muted,padding:'8px 4px',borderBottom:`1px solid ${C.border}`}}>
+                          <span>{entry.item.evento} · {entry.item.mercado}</span>
+                          <span>{entry.erro ? 'erro na análise' : `score ${entry.result?.score ?? '—'} < mín. ${entry.result?._minScore ?? '—'}`}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {scanTriagem && !scanRodando && scanResultados.length === 0 && aptosAtivos.length > 0 && (
+                <div style={{marginBottom:'18px'}}>
+                  <div style={{fontSize:'14px',fontWeight:700,marginBottom:'2px'}}>Aptos da triagem</div>
+                  <div style={{fontSize:'12px',color:C.muted,marginBottom:'10px'}}>Mercado precificado acima do mínimo da estratégia · ordenados por margem · clique em "Analisar" acima pra rodar os Gates + IA em todos</div>
+                  {aptosAtivos.map(a=>(
+                    <div key={a.fixtureId} style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',padding:'9px 4px',borderBottom:`1px solid ${C.border}`}}>
+                      <span style={{color:C.text}}>{a.evento} <span style={{color:C.muted2}}>· {a.liga}</span></span>
+                      <span style={{color:C.muted,whiteSpace:'nowrap'}}>{a.mercado} · +{a.margem}pp</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {scanTriagem?.descartes?.length > 0 && (
+                <div>
+                  <button onClick={()=>setScanVerDescartes(v=>!v)} style={{background:'none',border:'none',color:C.muted,fontSize:'12px',cursor:'pointer',fontFamily:'inherit',padding:0}}>
+                    {scanVerDescartes?'▾':'▸'} Descartes da triagem ({scanTriagem.descartes.length}) — cada um com motivo auditável
+                  </button>
+                  {scanVerDescartes && scanTriagem.descartes.map((d,i)=>(
+                    <div key={i} style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',padding:'8px 4px',borderBottom:`1px solid ${C.border}`}}>
+                      <span style={{color:C.text,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{d.evento} <span style={{color:C.muted2}}>· {d.liga}</span></span>
+                      <span style={{color:C.muted2,textAlign:'right'}}>{d.motivo}</span>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+            );
+          })()}
+
         </main>
       </div>
 
