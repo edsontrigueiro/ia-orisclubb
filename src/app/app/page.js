@@ -3,7 +3,7 @@ export const dynamic = 'force-dynamic';
 import { useState, useEffect, useCallback, useRef } from 'react';
 import { useRouter } from 'next/navigation';
 import { authFetch, getStoredUser, clearSession } from '@/lib/clientSession';
-import { C, FONT_DISPLAY, FONT_BODY, FONT_MONO } from '@/lib/theme';
+import { C, FONT_DISPLAY, FONT_BODY, FONT_MONO, LOGO_SRC } from '@/lib/theme';
 
 const MKTS = [
   { id:'lay2x2',     label:'Lay 2x2',        min:82 },
@@ -18,16 +18,21 @@ const MKTS = [
   { id:'escanteios', label:'+8.5 Escanteios',min:85 },
 ];
 
-const NAV = [
-  { id:'analises',    label:'Análises',     icon:'M22 12h-4l-3 9L9 3l-3 9H2' },
-  { id:'jogosdodia',  label:'Jogos do Dia', icon:'M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z' },
-  { id:'historico',   label:'Histórico',    icon:'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z' },
-  { id:'auditoria',   label:'Auditoria',    icon:'M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11' },
-  { id:'desempenho',  label:'Desempenho',   icon:'M23 6 13.5 15.5 8.5 10.5 1 18 M17 6 23 6 23 12' },
-  // Em teste (beta): varredura da grade do dia. Aba EXTRA — não substitui
-  // Análises nem Jogos do Dia; se a calibração scanner-vs-manual não se
-  // sustentar, remover esta linha desliga a feature inteira do rail.
-  { id:'scanner',     label:'Scanner β',    icon:'M12 2a10 10 0 1 0 10 10 M12 6a6 6 0 1 0 6 6 M12 12l6.5-6.5' },
+// Sidebar agrupada (redesign do playbook): rótulo de seção em mono +
+// itens com texto — substitui o rail de ícones minúsculos.
+const NAV_GROUPS = [
+  { label: '/ Operação', items: [
+    { id:'analises',    label:'Análises',     icon:'M22 12h-4l-3 9L9 3l-3 9H2' },
+    { id:'jogosdodia',  label:'Jogos do dia', icon:'M8 2v4 M16 2v4 M3 10h18 M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z' },
+    // Em teste (beta): varredura da grade. Aba EXTRA — remover esta linha
+    // desliga a feature inteira do menu se a calibração não se sustentar.
+    { id:'scanner',     label:'Scanner',      beta:true, icon:'M12 2a10 10 0 1 0 10 10 M12 6a6 6 0 1 0 6 6 M12 12l6.5-6.5' },
+  ]},
+  { label: '/ Auditoria', items: [
+    { id:'historico',   label:'Histórico',    icon:'M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm0 18c-4.41 0-8-3.59-8-8s3.59-8 8-8 8 3.59 8 8-3.59 8-8 8zm.5-13H11v6l5.25 3.15.75-1.23-4.5-2.67V7z' },
+    { id:'auditoria',   label:'Auditoria',    icon:'M9 11l3 3L22 4 M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11' },
+    { id:'desempenho',  label:'Desempenho',   icon:'M23 6 13.5 15.5 8.5 10.5 1 18 M17 6 23 6 23 12' },
+  ]},
 ];
 
 function fmt(v) { return v?.toLocaleString('pt-BR',{minimumFractionDigits:2,maximumFractionDigits:2}) ?? '—'; }
@@ -149,7 +154,7 @@ function StatsPanel({ dados }) {
   }
 
   return (
-    <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'10px',padding:'16px'}}>
+    <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'16px'}}>
       <div style={{display:'flex',gap:'20px',marginBottom:'16px',flexWrap:'wrap'}}>
         <ColunaTime nome={dados.time_a} forma={dados.forma_recente_time_a} jogos={dados.jogos_recentes_time_a}/>
         <div style={{width:'1px',background:C.border,flexShrink:0}}/>
@@ -157,7 +162,7 @@ function StatsPanel({ dados }) {
       </div>
 
       {dados.modo_copa && (
-        <div style={{fontSize:'10.5px',color:C.muted2,marginBottom:'10px',background:C.bg4,padding:'6px 9px',borderRadius:'6px'}}>
+        <div style={{fontSize:'10.5px',color:C.muted2,marginBottom:'10px',background:C.bg4,padding:'6px 9px',borderRadius:'2px'}}>
           🏆 Competição de copa/mata-mata — H2H raro e mando de campo menos relevante são esperados aqui.
         </div>
       )}
@@ -722,7 +727,7 @@ export default function App() {
   // scores raspando o mínimo pedem mais cautela mesmo "aprovados".
   const margemScore = result && !result._error ? (result.score - (result._minScore ?? mktInfo.min)) : null;
   const sizing = margemScore == null ? null
-    : margemScore >= 15 ? { label: 'Entrada reforçada', desc: `Score ${margemScore} pontos acima do mínimo — sinal forte, considere uma entrada até 50% maior que sua entrada padrão.`, color: C.green }
+    : margemScore >= 15 ? { label: 'Entrada reforçada', desc: `Score ${margemScore} pontos acima do mínimo — sinal forte, considere uma entrada até 50% maior que sua entrada padrão.`, color: C.orange }
     : margemScore >= 5  ? { label: 'Entrada padrão', desc: `Score ${margemScore} pontos acima do mínimo — dentro da faixa normal, mantenha sua entrada padrão.`, color: C.orangeGlow }
     : { label: 'Entrada cautelosa', desc: `Score só ${margemScore} pontos acima do mínimo — margem estreita, considere uma entrada menor que a padrão.`, color: C.red };
 
@@ -737,12 +742,7 @@ export default function App() {
 
       {/* TOPBAR */}
       <div style={{height:'56px',background:'rgba(10,10,10,.97)',borderBottom:`1px solid ${C.border}`,display:'flex',alignItems:'center',padding:'0 20px',gap:'14px',position:'sticky',top:0,zIndex:100,backdropFilter:'blur(20px)'}}>
-        <svg width="26" height="26" viewBox="0 0 44 44" fill="none" style={{flexShrink:0}}>
-          <rect x="1" y="1" width="42" height="42" rx="10" fill={C.orangeDim} stroke={C.orange} strokeWidth="1.5"/>
-          <circle cx="22" cy="22" r="11" fill="none" stroke={C.orange} strokeWidth="2.2" strokeDasharray="52 17" strokeLinecap="round" transform="rotate(-90 22 22)"/>
-          <circle cx="22" cy="11" r="2" fill={C.orange}/>
-        </svg>
-        <span style={{fontSize:'14px',fontWeight:700,letterSpacing:'-.2px',fontFamily:FONT_DISPLAY}}>ORIS<span style={{color:C.orange}}> CLUB</span></span>
+        <img src={LOGO_SRC} alt="Oris Club" style={{height:'26px',width:'auto',display:'block',flexShrink:0}}/>
 
         <div style={{flex:1}}/>
 
@@ -757,14 +757,14 @@ export default function App() {
             ? `API-Football: ${footballOk ? 'OK' : (health.football?.motivo || 'falha')}${health.football?.requestsUsadas != null ? ` (${health.football.requestsUsadas}/${health.football.requestsLimite} hoje)` : ''} · Anthropic: ${anthropicOk ? 'configurada' : 'não configurada'}`
             : 'Checando status das APIs...';
           return (
-            <div title={titulo} style={{display:'flex',alignItems:'center',gap:'5px',background: tudoOk || health===null ? C.orangeDim : C.redDim,border:`1px solid ${tudoOk || health===null ? C.orangeBorder : 'rgba(255,77,77,.3)'}`,borderRadius:'7px',padding:'5px 11px',cursor:'help'}}>
+            <div title={titulo} style={{display:'flex',alignItems:'center',gap:'5px',background: tudoOk || health===null ? C.orangeDim : C.redDim,border:`1px solid ${tudoOk || health===null ? C.orangeBorder : 'rgba(255,77,77,.3)'}`,borderRadius:'2px',padding:'5px 11px',cursor:'help'}}>
               <div style={{width:'6px',height:'6px',borderRadius:'50%',background:cor,animation: health===null ? 'none' : 'pulseOrange 2s infinite'}}/>
               <span style={{fontSize:'10px',fontWeight:700,color:corTexto,letterSpacing:'.5px',textTransform:'uppercase'}}>{label}</span>
             </div>
           );
         })()}
 
-        <div style={{display:'flex',alignItems:'center',gap:'8px',background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'7px',padding:'5px 11px'}}>
+        <div style={{display:'flex',alignItems:'center',gap:'8px',background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'5px 11px'}}>
           <div style={{width:'26px',height:'26px',borderRadius:'50%',background:C.orange,display:'flex',alignItems:'center',justifyContent:'center',fontSize:'11px',fontWeight:800,color:'#0A0A0A'}}>
             {user?.email?.[0]?.toUpperCase() || 'U'}
           </div>
@@ -778,22 +778,30 @@ export default function App() {
       <div className="app-shell" style={{display:'flex'}}>
 
         {/* NAV RAIL */}
-        <nav className="nav-rail" style={{display:'flex',flexDirection:'column',width:'76px',background:C.bg2,borderRight:`1px solid ${C.border}`,padding:'14px 0',gap:'4px',position:'sticky',top:'56px',height:'calc(100vh - 56px)',flexShrink:0}}>
-          {NAV.map(t => (
-            <button key={t.id} onClick={() => setTab(t.id)} style={{
-              display:'flex',flexDirection:'column',alignItems:'center',gap:'5px',
-              padding:'12px 4px',margin:'0 8px',borderRadius:'9px',
-              background: tab===t.id ? C.orangeDim : 'transparent',
-              border:'none',
-              color: tab===t.id ? C.orange : C.muted,
-              fontSize:'10px',fontWeight: tab===t.id ? 700 : 500,
-              cursor:'pointer',fontFamily:'inherit',transition:'all .16s',
-            }}>
-              <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d={t.icon}/>
-              </svg>
-              {t.label}
-            </button>
+        <nav className="nav-rail" style={{display:'flex',flexDirection:'column',width:'176px',background:C.bg,borderRight:`1px solid ${C.border}`,padding:'18px 10px',gap:'2px',position:'sticky',top:'56px',height:'calc(100vh - 56px)',flexShrink:0,boxSizing:'border-box'}}>
+          {NAV_GROUPS.map(g => (
+            <div key={g.label} style={{display:'contents'}}>
+              <div className="nav-sec" style={{fontFamily:FONT_MONO,fontSize:'9px',fontWeight:500,color:C.muted2,letterSpacing:'2px',textTransform:'uppercase',padding:'0 10px',margin:'10px 0 8px'}}>{g.label}</div>
+              {g.items.map(t => (
+                <button key={t.id} onClick={() => setTab(t.id)} style={{
+                  display:'flex',flexDirection:'row',alignItems:'center',gap:'10px',
+                  padding:'9px 10px',margin:0,width:'100%',boxSizing:'border-box',
+                  background: tab===t.id ? C.orangeDim : 'transparent',
+                  border:'none',
+                  borderLeft: tab===t.id ? `2px solid ${C.orange}` : '2px solid transparent',
+                  borderRadius:0,textAlign:'left',
+                  color: tab===t.id ? C.orange : C.muted,
+                  fontSize:'13px',fontWeight: tab===t.id ? 600 : 500,
+                  cursor:'pointer',fontFamily:'inherit',transition:'all .16s',
+                }}>
+                  <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{flexShrink:0}}>
+                    <path d={t.icon}/>
+                  </svg>
+                  {t.label}
+                  {t.beta && <span style={{fontFamily:FONT_MONO,fontSize:'9px',letterSpacing:'1px',marginLeft:'auto'}}>BETA</span>}
+                </button>
+              ))}
+            </div>
           ))}
         </nav>
 
@@ -803,19 +811,19 @@ export default function App() {
           {/* ════ ANÁLISES ════ */}
           {tab === 'analises' && (
             <div>
-              <div style={{fontSize:'10px',fontWeight:700,color:C.orange,letterSpacing:'2px',textTransform:'uppercase',marginBottom:'6px'}}>Painel de Análise</div>
-              <div style={{fontSize:'21px',fontWeight:800,letterSpacing:'-.3px',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Análise de Sinais</div>
+              <div style={{fontFamily:FONT_MONO,fontSize:'10px',fontWeight:500,color:C.orange,letterSpacing:'2.5px',textTransform:'uppercase',marginBottom:'6px'}}>Painel de Análise</div>
+              <div style={{fontSize:'23px',fontWeight:900,letterSpacing:'-.01em',textTransform:'uppercase',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Análise de Sinais</div>
               <div style={{fontSize:'13px',color:C.muted,marginBottom:'20px'}}>Selecione o mercado, informe o jogo e deixe a IA analisar</div>
 
               {/* COMMAND BAR */}
-              <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',padding:'20px',position:'relative',overflow:'hidden'}}>
+              <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'20px',position:'relative',overflow:'hidden'}}>
                 <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:`linear-gradient(90deg,${C.orange},${C.orangeGlow})`}}/>
 
                 <div style={{fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1.5px',textTransform:'uppercase',marginBottom:'11px'}}>Mercado</div>
                 <div style={{display:'flex',flexWrap:'wrap',gap:'8px',marginBottom:'18px'}}>
                   {MKTS.map(m => (
                     <button key={m.id} onClick={() => setMkt(m.label)} style={{
-                      padding:'9px 14px',borderRadius:'8px',
+                      padding:'9px 14px',borderRadius:'2px',
                       border:`1px solid ${mkt===m.label ? C.orange : C.border}`,
                       background: mkt===m.label ? C.orangeDim : C.bg4,
                       color: mkt===m.label ? C.orangeGlow : C.muted,
@@ -832,7 +840,7 @@ export default function App() {
                 <label style={{display:'block',fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1.5px',textTransform:'uppercase',marginBottom:'8px'}}>Jogo / Evento</label>
                 <textarea value={jogo} onChange={e=>setJogo(e.target.value)}
                   placeholder={"Ex: Arsenal vs Chelsea\nEx: River Plate (Uruguai) vs Nacional"}
-                  rows={3} style={{width:'100%',background:C.bg4,border:`1px solid ${C.border}`,color:C.text,borderRadius:'8px',padding:'10px 12px',fontSize:'13px',fontFamily:'inherit',resize:'none',outline:'none',boxSizing:'border-box',lineHeight:'1.6'}}/>
+                  rows={3} style={{width:'100%',background:C.bg4,border:`1px solid ${C.border}`,color:C.text,borderRadius:'2px',padding:'10px 12px',fontSize:'13px',fontFamily:'inherit',resize:'none',outline:'none',boxSizing:'border-box',lineHeight:'1.6'}}/>
                 <div style={{fontSize:'10px',color:C.muted2,marginTop:'8px',marginBottom:'18px',display:'flex',alignItems:'center',gap:'5px'}}>
                   <div style={{width:'5px',height:'5px',borderRadius:'50%',background:C.orange}}/>
                   API-Football + IA Anthropic
@@ -842,7 +850,7 @@ export default function App() {
                   width:'100%',
                   background: analyzing || !jogo.trim() ? C.muted3 : C.orange,
                   color: analyzing || !jogo.trim() ? C.muted : '#0A0A0A',
-                  border:'none',borderRadius:'9px',padding:'13px',
+                  border:'none',borderRadius:'2px',padding:'13px',
                   fontSize:'14px',fontWeight:700,cursor: !jogo.trim() ? 'not-allowed' : 'pointer',
                   fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:'8px',
                   transition:'all .18s',
@@ -864,7 +872,7 @@ export default function App() {
               {/* RESULT PANEL */}
               <div style={{marginTop:'16px'}}>
                 {!result && !analyzing && (
-                  <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'14px',padding:'40px 24px',textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:'14px'}}>
+                  <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'2px',padding:'40px 24px',textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:'14px'}}>
                     <div style={{width:'52px',height:'52px',borderRadius:'50%',background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,display:'flex',alignItems:'center',justifyContent:'center'}}>
                       <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={C.orange} strokeWidth="1.5"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
                     </div>
@@ -874,7 +882,7 @@ export default function App() {
                 )}
 
                 {analyzing && (
-                  <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',padding:'32px',display:'flex',flexDirection:'column',alignItems:'center',gap:'16px'}}>
+                  <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'32px',display:'flex',flexDirection:'column',alignItems:'center',gap:'16px'}}>
                     <div style={{width:'46px',height:'46px',border:`3px solid ${C.orangeDim}`,borderTopColor:C.orange,borderRadius:'50%',animation:'spin .8s linear infinite'}}/>
                     <div style={{fontSize:'14px',color:C.orangeGlow,fontWeight:600}}>IA analisando...</div>
                     <div style={{display:'flex',flexDirection:'column',gap:'8px',width:'100%',maxWidth:'240px'}}>
@@ -889,7 +897,7 @@ export default function App() {
                 )}
 
                 {result && !analyzing && result._error && (
-                  <div style={{background:C.redDim,border:`1px solid rgba(255,77,77,.35)`,borderRadius:'14px',padding:'14px 16px',display:'flex',alignItems:'flex-start',gap:'10px'}}>
+                  <div style={{background:C.redDim,border:`1px solid rgba(255,77,77,.35)`,borderRadius:'2px',padding:'14px 16px',display:'flex',alignItems:'flex-start',gap:'10px'}}>
                     <span style={{fontSize:'18px',lineHeight:1}}>⚠️</span>
                     <div>
                       <div style={{fontSize:'13px',fontWeight:800,color:C.red,letterSpacing:'.3px'}}>FALHA NA ANÁLISE</div>
@@ -904,7 +912,7 @@ export default function App() {
                   <div style={{display:'flex',flexDirection:'column',gap:'14px'}}>
 
                     {result._demo && (
-                      <div style={{background:C.redDim,border:`1px solid rgba(255,77,77,.35)`,borderRadius:'14px',padding:'14px 16px',display:'flex',alignItems:'flex-start',gap:'10px'}}>
+                      <div style={{background:C.redDim,border:`1px solid rgba(255,77,77,.35)`,borderRadius:'2px',padding:'14px 16px',display:'flex',alignItems:'flex-start',gap:'10px'}}>
                         <span style={{fontSize:'18px',lineHeight:1}}>⚠️</span>
                         <div>
                           <div style={{fontSize:'13px',fontWeight:800,color:C.red,letterSpacing:'.3px'}}>ANÁLISE EM MODO DEMONSTRAÇÃO</div>
@@ -917,12 +925,12 @@ export default function App() {
 
                     {/* Veredito — anel de confiança */}
                     {(() => {
-                      const verdictColor = result.aprovado ? C.green : C.red;
+                      const verdictColor = result.aprovado ? C.orange : C.red;
                       return (
                         <div className="verdict-card" style={{
-                          background: result.aprovado ? C.greenDim : C.redDim,
+                          background: result.aprovado ? C.orangeDim : C.redDim,
                           border:`1px solid ${result.aprovado ? 'rgba(0,208,132,.25)' : 'rgba(255,77,77,.25)'}`,
-                          borderRadius:'14px',padding:'22px',position:'relative',overflow:'hidden',
+                          borderRadius:'2px',padding:'22px',position:'relative',overflow:'hidden',
                           display:'flex',alignItems:'center',gap:'22px',
                         }}>
                           <div style={{position:'absolute',top:0,left:0,right:0,height:'2px',background:verdictColor}}/>
@@ -948,7 +956,7 @@ export default function App() {
                     })()}
 
                     {/* Critérios — duas colunas com linha fina divisória */}
-                    <div className="criteria-split" style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',display:'flex',overflow:'hidden'}}>
+                    <div className="criteria-split" style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',display:'flex',overflow:'hidden'}}>
                       <div style={{flex:1,padding:'15px',minWidth:0}}>
                         <div style={{fontSize:'10px',fontWeight:700,color:C.green,letterSpacing:'1.5px',textTransform:'uppercase',marginBottom:'10px'}}>✓ Atendidos</div>
                         {(result.criterios_atendidos || []).length === 0
@@ -977,7 +985,7 @@ export default function App() {
                         vez que um gate reprovava um sinal, o motivo ficava invisível pro
                         trader no momento exato da decisão de pegar ou passar. */}
                     {!!(result.alertas || []).length && (
-                      <div style={{background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,borderRadius:'12px',padding:'14px 16px',position:'relative',overflow:'hidden'}}>
+                      <div style={{background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,borderRadius:'2px',padding:'14px 16px',position:'relative',overflow:'hidden'}}>
                         <div style={{position:'absolute',top:0,left:0,right:0,height:'1.5px',background:`linear-gradient(90deg,${C.orange},${C.orangeGlow})`}}/>
                         <div style={{fontSize:'10px',fontWeight:700,color:C.orange,letterSpacing:'1.5px',textTransform:'uppercase',marginBottom:'8px'}}>⚠ Alertas da IA</div>
                         <ul style={{margin:0,paddingLeft:'18px',color:C.text,fontSize:'13px',lineHeight:1.75}}>
@@ -987,7 +995,7 @@ export default function App() {
                     )}
 
                     {/* Resumo */}
-                    <div style={{background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,borderRadius:'12px',padding:'14px 16px',position:'relative',overflow:'hidden'}}>
+                    <div style={{background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,borderRadius:'2px',padding:'14px 16px',position:'relative',overflow:'hidden'}}>
                       <div style={{position:'absolute',top:0,left:0,right:0,height:'1.5px',background:`linear-gradient(90deg,${C.orange},${C.orangeGlow})`}}/>
                       <div style={{fontSize:'10px',fontWeight:700,color:C.orange,letterSpacing:'1.5px',textTransform:'uppercase',marginBottom:'6px'}}>Recomendação Operacional</div>
                       <div style={{fontSize:'13px',color:C.text,lineHeight:1.75}}>{result.resumo}</div>
@@ -995,17 +1003,17 @@ export default function App() {
 
                     {/* Decision */}
                     {!saved && (
-                      <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',padding:'18px'}}>
+                      <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'18px'}}>
                         <div style={{fontSize:'13px',fontWeight:700,marginBottom:'13px'}}>Decisão</div>
                         <div style={{display:'grid',gridTemplateColumns:'1fr 1fr',gap:'9px',marginBottom:'14px'}}>
                           <button onClick={()=>setDecisao('pegar')} style={{
-                            padding:'12px',borderRadius:'9px',border:`2px solid ${decisao==='pegar' ? C.green : C.border}`,
+                            padding:'12px',borderRadius:'2px',border:`2px solid ${decisao==='pegar' ? C.green : C.border}`,
                             background: decisao==='pegar' ? C.greenDim : C.bg4,
                             color: decisao==='pegar' ? C.green : C.muted,
                             fontSize:'13px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',transition:'all .18s',
                           }}>✓ Vou pegar</button>
                           <button onClick={()=>setDecisao('passar')} style={{
-                            padding:'12px',borderRadius:'9px',border:`2px solid ${decisao==='passar' ? C.red : C.border}`,
+                            padding:'12px',borderRadius:'2px',border:`2px solid ${decisao==='passar' ? C.red : C.border}`,
                             background: decisao==='passar' ? C.redDim : C.bg4,
                             color: decisao==='passar' ? C.red : C.muted,
                             fontSize:'13px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',transition:'all .18s',
@@ -1015,7 +1023,7 @@ export default function App() {
                         {decisao === 'pegar' && (
                           <>
                           {sizing && (
-                            <div style={{background:`${sizing.color}14`,border:`1px solid ${sizing.color}40`,borderRadius:'8px',padding:'10px 13px',marginBottom:'12px',display:'flex',alignItems:'flex-start',gap:'8px'}}>
+                            <div style={{background:`${sizing.color}14`,border:`1px solid ${sizing.color}40`,borderRadius:'2px',padding:'10px 13px',marginBottom:'12px',display:'flex',alignItems:'flex-start',gap:'8px'}}>
                               <span style={{fontSize:'10px',fontWeight:800,color:sizing.color,letterSpacing:'1px',textTransform:'uppercase',whiteSpace:'nowrap'}}>{sizing.label}</span>
                               <span style={{fontSize:'11px',color:C.muted,lineHeight:1.5}}>{sizing.desc}</span>
                             </div>
@@ -1025,16 +1033,16 @@ export default function App() {
                               <label style={{display:'block',fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1.2px',textTransform:'uppercase',marginBottom:'6px'}}>Stake (R$)</label>
                               <input type="number" value={stake} onChange={e=>setStake(e.target.value)}
                                 placeholder="Ex: 20" min="0.01" step="0.01"
-                                style={{width:'100%',background:C.bg4,border:`1px solid ${C.border}`,color:C.text,borderRadius:'8px',padding:'10px 12px',fontSize:'14px',fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+                                style={{width:'100%',background:C.bg4,border:`1px solid ${C.border}`,color:C.text,borderRadius:'2px',padding:'10px 12px',fontSize:'14px',fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
                             </div>
                             <div>
                               <label style={{display:'block',fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1.2px',textTransform:'uppercase',marginBottom:'6px'}}>Odd na Exchange</label>
                               <input type="number" value={odd} onChange={e=>setOdd(e.target.value)}
                                 placeholder="Ex: 1.85" min="1.01" step="0.01"
-                                style={{width:'100%',background:C.bg4,border:`1px solid ${C.border}`,color:C.text,borderRadius:'8px',padding:'10px 12px',fontSize:'14px',fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
+                                style={{width:'100%',background:C.bg4,border:`1px solid ${C.border}`,color:C.text,borderRadius:'2px',padding:'10px 12px',fontSize:'14px',fontFamily:'inherit',outline:'none',boxSizing:'border-box'}}/>
                             </div>
                             {lucPotencial !== null && stake && odd && (
-                              <div style={{gridColumn:'1/-1',background:C.greenDim,border:'1px solid rgba(0,208,132,.2)',borderRadius:'8px',padding:'11px 14px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
+                              <div style={{gridColumn:'1/-1',background:C.greenDim,border:'1px solid rgba(0,208,132,.2)',borderRadius:'2px',padding:'11px 14px',display:'flex',justifyContent:'space-between',alignItems:'center'}}>
                                 <span style={{fontSize:'12px',color:C.muted}}>Lucro potencial:</span>
                                 <span style={{fontSize:'17px',fontWeight:800,color:C.green,fontFamily:FONT_MONO}}>+R${fmt(lucPotencial)}</span>
                               </div>
@@ -1047,7 +1055,7 @@ export default function App() {
                           <button onClick={saveSignal} disabled={saving || (decisao==='pegar' && (!stake || !odd))} style={{
                             width:'100%',background:saving ? C.muted3 : C.orange,
                             color:saving ? C.muted : '#0A0A0A',
-                            border:'none',borderRadius:'9px',padding:'12px',
+                            border:'none',borderRadius:'2px',padding:'12px',
                             fontSize:'13px',fontWeight:700,cursor:saving?'not-allowed':'pointer',
                             fontFamily:'inherit',display:'flex',alignItems:'center',justifyContent:'center',gap:'7px',
                           }}>
@@ -1055,7 +1063,7 @@ export default function App() {
                           </button>
                         )}
                         {saveError && (
-                          <div style={{marginTop:'10px',background:C.redDim,border:'1px solid rgba(255,77,77,.3)',borderRadius:'8px',padding:'10px 13px',fontSize:'12px',color:C.red,lineHeight:1.5}}>
+                          <div style={{marginTop:'10px',background:C.redDim,border:'1px solid rgba(255,77,77,.3)',borderRadius:'2px',padding:'10px 13px',fontSize:'12px',color:C.red,lineHeight:1.5}}>
                             ⚠️ {saveError}
                           </div>
                         )}
@@ -1063,7 +1071,7 @@ export default function App() {
                     )}
 
                     {saved && (
-                      <div style={{background:C.greenDim,border:'1px solid rgba(0,208,132,.3)',borderRadius:'10px',padding:'14px',textAlign:'center',fontSize:'14px',fontWeight:700,color:C.green}}>
+                      <div style={{background:C.greenDim,border:'1px solid rgba(0,208,132,.3)',borderRadius:'2px',padding:'14px',textAlign:'center',fontSize:'14px',fontWeight:700,color:C.green}}>
                         ✓ Sinal salvo no histórico!
                       </div>
                     )}
@@ -1078,7 +1086,7 @@ export default function App() {
             <div>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'20px',flexWrap:'wrap',gap:'10px'}}>
                 <div>
-                  <div style={{fontSize:'21px',fontWeight:800,letterSpacing:'-.3px',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Jogos do Dia</div>
+                  <div style={{fontSize:'23px',fontWeight:900,letterSpacing:'-.01em',textTransform:'uppercase',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Jogos do Dia</div>
                   <div style={{fontSize:'13px',color:C.muted}}>
                     {dataJogos ? new Date(dataJogos + 'T12:00:00').toLocaleDateString('pt-BR', { weekday:'long', day:'2-digit', month:'long' }) : 'Grade completa, atualiza sozinha a cada dia'}
                     {jogosDoDia.length > 0 && ` · ${jogosDoDia.length} jogos`}
@@ -1086,18 +1094,18 @@ export default function App() {
                 </div>
                 <div style={{display:'flex',alignItems:'center',gap:'8px'}}>
                   <button onClick={() => irParaDia(-1)} disabled={loadingJogos || limitePassadoAtingido()} title={limitePassadoAtingido() ? 'Limite de 7 dias no passado' : 'Dia anterior'}
-                    style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'8px',width:'34px',height:'34px',display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,cursor:(loadingJogos||limitePassadoAtingido())?'default':'pointer',opacity:(loadingJogos||limitePassadoAtingido()) ? .5 : 1}}>
+                    style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',width:'34px',height:'34px',display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,cursor:(loadingJogos||limitePassadoAtingido())?'default':'pointer',opacity:(loadingJogos||limitePassadoAtingido()) ? .5 : 1}}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="15 18 9 12 15 6"/></svg>
                   </button>
-                  <button onClick={irParaHoje} disabled={loadingJogos} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',color:C.muted,cursor:loadingJogos?'default':'pointer',fontFamily:'inherit',opacity:loadingJogos ? .5 : 1}}>
+                  <button onClick={irParaHoje} disabled={loadingJogos} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'8px 14px',fontSize:'12px',color:C.muted,cursor:loadingJogos?'default':'pointer',fontFamily:'inherit',opacity:loadingJogos ? .5 : 1}}>
                     Hoje
                   </button>
                   <button onClick={() => irParaDia(1)} disabled={loadingJogos || limiteFuturoAtingido()} title={limiteFuturoAtingido() ? 'Limite de 2 dias no futuro' : 'Dia seguinte'}
-                    style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'8px',width:'34px',height:'34px',display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,cursor:(loadingJogos||limiteFuturoAtingido())?'default':'pointer',opacity:(loadingJogos||limiteFuturoAtingido()) ? .5 : 1}}>
+                    style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',width:'34px',height:'34px',display:'flex',alignItems:'center',justifyContent:'center',color:C.muted,cursor:(loadingJogos||limiteFuturoAtingido())?'default':'pointer',opacity:(loadingJogos||limiteFuturoAtingido()) ? .5 : 1}}>
                     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><polyline points="9 18 15 12 9 6"/></svg>
                   </button>
                   <button onClick={() => loadJogosDoDia(dataJogos || undefined)} disabled={loadingJogos} title="Recarregar este dia"
-                    style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',color:C.muted,cursor:loadingJogos?'default':'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:'6px',opacity:loadingJogos ? .5 : 1}}>
+                    style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'8px 14px',fontSize:'12px',color:C.muted,cursor:loadingJogos?'default':'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:'6px',opacity:loadingJogos ? .5 : 1}}>
                     <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.49-8.18"/></svg>
                     Atualizar
                   </button>
@@ -1110,7 +1118,7 @@ export default function App() {
                   <div style={{fontSize:'13px',color:C.muted}}>Buscando a grade do dia...</div>
                 </div>
               ) : jogosError ? (
-                <div style={{background:C.redDim,border:`1px solid rgba(255,77,77,.35)`,borderRadius:'14px',padding:'14px 16px',display:'flex',alignItems:'flex-start',gap:'10px'}}>
+                <div style={{background:C.redDim,border:`1px solid rgba(255,77,77,.35)`,borderRadius:'2px',padding:'14px 16px',display:'flex',alignItems:'flex-start',gap:'10px'}}>
                   <span style={{fontSize:'18px',lineHeight:1}}>⚠️</span>
                   <div>
                     <div style={{fontSize:'13px',fontWeight:800,color:C.red,letterSpacing:'.3px'}}>FALHA AO CARREGAR</div>
@@ -1118,7 +1126,7 @@ export default function App() {
                   </div>
                 </div>
               ) : jogosDoDia.length === 0 ? (
-                <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'14px',padding:'48px 24px',textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:'14px'}}>
+                <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'2px',padding:'48px 24px',textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:'14px'}}>
                   <div style={{width:'52px',height:'52px',borderRadius:'50%',background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,display:'flex',alignItems:'center',justifyContent:'center'}}>
                     <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke={C.orange} strokeWidth="1.5"><path d="M8 2v4M16 2v4M3 10h18M5 4h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2z"/></svg>
                   </div>
@@ -1143,7 +1151,7 @@ export default function App() {
                             <div style={{fontSize:'12px',fontWeight:700,color:C.text}}>{g.liga}</div>
                             {g.pais && <div style={{fontSize:'10px',color:C.muted2}}>{g.pais}</div>}
                           </div>
-                          <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'12px',overflow:'hidden'}}>
+                          <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',overflow:'hidden'}}>
                             {g.jogos.map((j, ji) => {
                               const aoVivo = ['1H','2H','HT','ET','P','LIVE'].includes(j.status);
                               const finalizado = ['FT','AET','PEN'].includes(j.status);
@@ -1180,7 +1188,7 @@ export default function App() {
                                         estatísticas (forma recente, H2H, escanteios) sem IA. */}
                                     <button onClick={() => toggleStats(j)} title="Ver estatísticas" style={{
                                       flexShrink:0,display:'flex',alignItems:'center',justifyContent:'center',
-                                      width:'28px',height:'28px',borderRadius:'7px',
+                                      width:'28px',height:'28px',borderRadius:'2px',
                                       background: statsVisiveis ? C.orangeDim : C.bg4,
                                       border:`1px solid ${statsVisiveis ? C.orangeBorder : C.border}`,
                                       cursor:'pointer',
@@ -1224,10 +1232,10 @@ export default function App() {
             <div>
               <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',marginBottom:'20px',flexWrap:'wrap',gap:'10px'}}>
                 <div>
-                  <div style={{fontSize:'21px',fontWeight:800,letterSpacing:'-.3px',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Histórico</div>
+                  <div style={{fontSize:'23px',fontWeight:900,letterSpacing:'-.01em',textTransform:'uppercase',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Histórico</div>
                   <div style={{fontSize:'13px',color:C.muted}}>Sinais que você decidiu pegar · Marque o resultado</div>
                 </div>
-                <button onClick={loadSignals} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',color:C.muted,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:'6px'}}>
+                <button onClick={loadSignals} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'8px 14px',fontSize:'12px',color:C.muted,cursor:'pointer',fontFamily:'inherit',display:'flex',alignItems:'center',gap:'6px'}}>
                   <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-.49-8.18"/></svg>
                   Atualizar
                 </button>
@@ -1236,13 +1244,13 @@ export default function App() {
               {loadingSignals ? (
                 <div style={{textAlign:'center',padding:'48px',color:C.muted,fontSize:'13px'}}>Carregando...</div>
               ) : pegados.length === 0 ? (
-                <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'14px',padding:'56px 32px',textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:'14px'}}>
+                <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'2px',padding:'56px 32px',textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:'14px'}}>
                   <div style={{width:'56px',height:'56px',borderRadius:'50%',background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,display:'flex',alignItems:'center',justifyContent:'center'}}>
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.orange} strokeWidth="1.5"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
                   </div>
                   <div style={{fontSize:'15px',fontWeight:700,fontFamily:FONT_DISPLAY}}>Nenhum sinal ainda</div>
                   <div style={{fontSize:'13px',color:C.muted,maxWidth:'280px',lineHeight:1.7}}>Analise um jogo e selecione "Vou pegar" para ele aparecer aqui.</div>
-                  <button onClick={()=>setTab('analises')} style={{background:C.orange,color:'#0A0A0A',border:'none',borderRadius:'8px',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginTop:'4px'}}>
+                  <button onClick={()=>setTab('analises')} style={{background:C.orange,color:'#0A0A0A',border:'none',borderRadius:0,boxShadow:'4px 4px 0 #000',textTransform:'uppercase',letterSpacing:'.04em',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginTop:'4px'}}>
                     Ir para Análises →
                   </button>
                 </div>
@@ -1252,22 +1260,22 @@ export default function App() {
                     const isGreen = s.resultado === 'green';
                     const isRed = s.resultado === 'red';
                     const borderColor = isGreen ? C.green : isRed ? C.red : C.border;
-                    const scoreColor = s.score >= (s.min_score ?? 82) ? C.green : C.red;
+                    const scoreColor = s.score >= (s.min_score ?? 82) ? C.orange : C.red;
                     const lucBruto = s.stake && s.odd ? (s.stake * s.odd) - s.stake : null;
                     return (
-                      <div key={s.id} style={{background:C.bg3,border:`1px solid ${borderColor}`,borderRadius:'14px',overflow:'hidden',transition:'border .18s'}}>
+                      <div key={s.id} style={{background:C.bg3,border:`1px solid ${borderColor}`,borderRadius:'2px',overflow:'hidden',transition:'border .18s'}}>
                         {s.resultado && <div style={{height:'2px',background: isGreen ? C.green : C.red}}/>}
                         <div style={{padding:'14px 16px'}}>
                           <div style={{display:'flex',alignItems:'flex-start',gap:'12px',flexWrap:'wrap'}}>
-                            <div style={{width:'52px',height:'52px',borderRadius:'10px',background:C.bg4,border:`1px solid ${C.border}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flexShrink:0}}>
+                            <div style={{width:'52px',height:'52px',borderRadius:'2px',background:C.bg4,border:`1px solid ${C.border}`,display:'flex',flexDirection:'column',alignItems:'center',justifyContent:'center',flexShrink:0}}>
                               <div style={{fontSize:'18px',fontWeight:800,color:scoreColor,lineHeight:1,fontFamily:FONT_MONO}}>{s.score}</div>
                               <div style={{fontSize:'9px',color:C.muted2,fontWeight:700,marginTop:'1px',fontFamily:FONT_MONO}}>/100</div>
                             </div>
                             <div style={{flex:1,minWidth:0}}>
                               <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap',marginBottom:'4px'}}>
                                 <span style={{fontSize:'14px',fontWeight:700,color:C.text}}>{s.evento}</span>
-                                <span style={{background:C.orangeDim,color:C.orangeGlow,border:`1px solid ${C.orangeBorder}`,borderRadius:'20px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>{s.mercado}</span>
-                                {s.competicao && <span style={{background:C.bg4,color:C.muted,border:`1px solid ${C.border}`,borderRadius:'20px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>{s.competicao}</span>}
+                                <span style={{background:C.orangeDim,color:C.orangeGlow,border:`1px solid ${C.orangeBorder}`,borderRadius:'2px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>{s.mercado}</span>
+                                {s.competicao && <span style={{background:C.bg4,color:C.muted,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>{s.competicao}</span>}
                               </div>
                               <div style={{display:'flex',alignItems:'center',gap:'12px',fontSize:'12px',color:C.muted,flexWrap:'wrap'}}>
                                 <span>Odd: <strong style={{color:C.text}}>{s.odd || '—'}</strong></span>
@@ -1283,7 +1291,7 @@ export default function App() {
                             <div style={{flexShrink:0,textAlign:'right'}}>
                               {s.resultado ? (
                                 <div style={{display:'flex',flexDirection:'column',gap:'4px',alignItems:'flex-end'}}>
-                                  <div style={{background: isGreen ? C.greenDim : C.redDim,border:`1px solid ${isGreen ? 'rgba(0,208,132,.3)' : 'rgba(255,77,77,.3)'}`,borderRadius:'20px',padding:'4px 13px',fontSize:'11px',fontWeight:800,color: isGreen ? C.green : C.red,letterSpacing:'.5px'}}>
+                                  <div style={{background: isGreen ? C.greenDim : C.redDim,border:`1px solid ${isGreen ? 'rgba(0,208,132,.3)' : 'rgba(255,77,77,.3)'}`,borderRadius:'2px',padding:'4px 13px',fontSize:'11px',fontWeight:800,color: isGreen ? C.green : C.red,letterSpacing:'.5px'}}>
                                     {isGreen ? '✓ GREEN' : '✗ RED'}
                                   </div>
                                   {s.lucro_real !== null && (
@@ -1294,10 +1302,10 @@ export default function App() {
                                 </div>
                               ) : (
                                 <div style={{display:'flex',gap:'7px'}}>
-                                  <button onClick={()=>updateResult(s.id,'green')} disabled={updatingId===s.id} style={{background:C.greenDim,border:'1px solid rgba(0,208,132,.3)',borderRadius:'8px',padding:'7px 13px',color:C.green,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',transition:'all .18s'}}>
+                                  <button onClick={()=>updateResult(s.id,'green')} disabled={updatingId===s.id} style={{background:C.greenDim,border:'1px solid rgba(0,208,132,.3)',borderRadius:'2px',padding:'7px 13px',color:C.green,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',transition:'all .18s'}}>
                                     {updatingId===s.id ? '...' : '✓ Green'}
                                   </button>
-                                  <button onClick={()=>updateResult(s.id,'red')} disabled={updatingId===s.id} style={{background:C.redDim,border:'1px solid rgba(255,77,77,.25)',borderRadius:'8px',padding:'7px 13px',color:C.red,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',transition:'all .18s'}}>
+                                  <button onClick={()=>updateResult(s.id,'red')} disabled={updatingId===s.id} style={{background:C.redDim,border:'1px solid rgba(255,77,77,.25)',borderRadius:'2px',padding:'7px 13px',color:C.red,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',transition:'all .18s'}}>
                                     {updatingId===s.id ? '...' : '✗ Red'}
                                   </button>
                                 </div>
@@ -1370,7 +1378,7 @@ export default function App() {
               o que foi escolhido pra apostar. */}
           {tab === 'auditoria' && (
             <div>
-              <div style={{fontSize:'21px',fontWeight:800,letterSpacing:'-.3px',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Auditoria</div>
+              <div style={{fontSize:'23px',fontWeight:900,letterSpacing:'-.01em',textTransform:'uppercase',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Auditoria</div>
               <div style={{fontSize:'13px',color:C.muted,marginBottom:'20px'}}>
                 Todo sinal já analisado, aprovado ou reprovado — marque o resultado real quando souber, mesmo sem ter apostado.
               </div>
@@ -1386,7 +1394,7 @@ export default function App() {
                     background: filtroAuditoria === f.id ? C.orangeDim : C.bg3,
                     border: `1px solid ${filtroAuditoria === f.id ? C.orangeBorder : C.border}`,
                     color: filtroAuditoria === f.id ? C.orangeGlow : C.muted,
-                    borderRadius:'20px',padding:'6px 14px',fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',
+                    borderRadius:'2px',padding:'6px 14px',fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',
                   }}>{f.label}</button>
                 ))}
               </div>
@@ -1394,7 +1402,7 @@ export default function App() {
               {loadingAnalises ? (
                 <div style={{textAlign:'center',padding:'48px',color:C.muted,fontSize:'13px'}}>Carregando...</div>
               ) : analisesError ? (
-                <div style={{background:C.redDim,border:'1px solid rgba(255,77,77,.3)',borderRadius:'12px',padding:'16px',color:C.red,fontSize:'13px'}}>{analisesError}</div>
+                <div style={{background:C.redDim,border:'1px solid rgba(255,77,77,.3)',borderRadius:'2px',padding:'16px',color:C.red,fontSize:'13px'}}>{analisesError}</div>
               ) : (() => {
                 const filtradas = analisesHistorico.filter(a => {
                   if (filtroAuditoria === 'aprovadas') return a.aprovado;
@@ -1403,7 +1411,7 @@ export default function App() {
                   return true;
                 });
                 return filtradas.length === 0 ? (
-                  <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'14px',padding:'48px 32px',textAlign:'center',color:C.muted,fontSize:'13px'}}>
+                  <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'2px',padding:'48px 32px',textAlign:'center',color:C.muted,fontSize:'13px'}}>
                     Nenhuma análise nesse filtro ainda.
                   </div>
                 ) : (
@@ -1411,14 +1419,14 @@ export default function App() {
                     {filtradas.map(a => {
                       const corBorda = a.resultado === 'green' ? C.green : a.resultado === 'red' ? C.red : C.border;
                       return (
-                        <div key={a.id} style={{background:C.bg3,border:`1px solid ${corBorda}`,borderRadius:'14px',padding:'14px 16px'}}>
+                        <div key={a.id} style={{background:C.bg3,border:`1px solid ${corBorda}`,borderRadius:'2px',padding:'14px 16px'}}>
                           <div style={{display:'flex',alignItems:'flex-start',gap:'12px',flexWrap:'wrap',justifyContent:'space-between'}}>
                             <div style={{flex:1,minWidth:0}}>
                               <div style={{display:'flex',alignItems:'center',gap:'8px',flexWrap:'wrap',marginBottom:'4px'}}>
                                 <span style={{fontSize:'14px',fontWeight:700,color:C.text}}>{a.evento}</span>
-                                <span style={{background:C.orangeDim,color:C.orangeGlow,border:`1px solid ${C.orangeBorder}`,borderRadius:'20px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>{a.mercado}</span>
-                                {a.competicao && <span style={{background:C.bg4,color:C.muted,border:`1px solid ${C.border}`,borderRadius:'20px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>{a.competicao}</span>}
-                                <span style={{background: a.aprovado ? C.greenDim : C.redDim,color: a.aprovado ? C.green : C.red,border:`1px solid ${a.aprovado ? 'rgba(0,208,132,.3)' : 'rgba(255,77,77,.3)'}`,borderRadius:'20px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>
+                                <span style={{background:C.orangeDim,color:C.orangeGlow,border:`1px solid ${C.orangeBorder}`,borderRadius:'2px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>{a.mercado}</span>
+                                {a.competicao && <span style={{background:C.bg4,color:C.muted,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>{a.competicao}</span>}
+                                <span style={{background: a.aprovado ? C.orangeDim : C.redDim,color: a.aprovado ? C.orange : C.red,border:`1px solid ${a.aprovado ? C.orangeBorder : 'rgba(255,77,77,.3)'}`,borderRadius:'2px',padding:'2px 9px',fontSize:'10px',fontWeight:700}}>
                                   {a.aprovado ? 'APROVADO' : 'REPROVADO'}
                                 </span>
                               </div>
@@ -1434,15 +1442,15 @@ export default function App() {
                             </div>
                             <div style={{display:'flex',gap:'7px',flexShrink:0}}>
                               {a.resultado ? (
-                                <div style={{background: a.resultado === 'green' ? C.greenDim : C.redDim,border:`1px solid ${a.resultado === 'green' ? 'rgba(0,208,132,.3)' : 'rgba(255,77,77,.3)'}`,borderRadius:'20px',padding:'4px 13px',fontSize:'11px',fontWeight:800,color: a.resultado === 'green' ? C.green : C.red,letterSpacing:'.5px'}}>
+                                <div style={{background: a.resultado === 'green' ? C.greenDim : C.redDim,border:`1px solid ${a.resultado === 'green' ? 'rgba(0,208,132,.3)' : 'rgba(255,77,77,.3)'}`,borderRadius:'2px',padding:'4px 13px',fontSize:'11px',fontWeight:800,color: a.resultado === 'green' ? C.green : C.red,letterSpacing:'.5px'}}>
                                   {a.resultado === 'green' ? '✓ GREEN' : '✗ RED'}
                                 </div>
                               ) : (
                                 <>
-                                  <button onClick={() => marcarResultadoAnalise(a.id, 'green')} disabled={marcandoId === a.id} style={{background:C.greenDim,border:'1px solid rgba(0,208,132,.3)',borderRadius:'8px',padding:'7px 13px',color:C.green,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+                                  <button onClick={() => marcarResultadoAnalise(a.id, 'green')} disabled={marcandoId === a.id} style={{background:C.greenDim,border:'1px solid rgba(0,208,132,.3)',borderRadius:'2px',padding:'7px 13px',color:C.green,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
                                     {marcandoId === a.id ? '...' : '✓ Green'}
                                   </button>
-                                  <button onClick={() => marcarResultadoAnalise(a.id, 'red')} disabled={marcandoId === a.id} style={{background:C.redDim,border:'1px solid rgba(255,77,77,.25)',borderRadius:'8px',padding:'7px 13px',color:C.red,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+                                  <button onClick={() => marcarResultadoAnalise(a.id, 'red')} disabled={marcandoId === a.id} style={{background:C.redDim,border:'1px solid rgba(255,77,77,.25)',borderRadius:'2px',padding:'7px 13px',color:C.red,fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
                                     {marcandoId === a.id ? '...' : '✗ Red'}
                                   </button>
                                 </>
@@ -1491,17 +1499,17 @@ export default function App() {
           {/* ════ DESEMPENHO ════ */}
           {tab === 'desempenho' && (
             <div>
-              <div style={{fontSize:'21px',fontWeight:800,letterSpacing:'-.3px',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Desempenho</div>
+              <div style={{fontSize:'23px',fontWeight:900,letterSpacing:'-.01em',textTransform:'uppercase',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Desempenho</div>
               <div style={{fontSize:'13px',color:C.muted,marginBottom:'24px'}}>ROI e resultados dos sinais que você pegou</div>
 
               {encerrados.length === 0 ? (
-                <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'14px',padding:'56px 32px',textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:'14px'}}>
+                <div style={{background:C.bg3,border:`1px dashed ${C.border}`,borderRadius:'2px',padding:'56px 32px',textAlign:'center',display:'flex',flexDirection:'column',alignItems:'center',gap:'14px'}}>
                   <div style={{width:'56px',height:'56px',borderRadius:'50%',background:C.orangeDim,border:`1px solid ${C.orangeBorder}`,display:'flex',alignItems:'center',justifyContent:'center'}}>
                     <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke={C.orange} strokeWidth="1.5"><polyline points="23 6 13.5 15.5 8.5 10.5 1 18"/><polyline points="17 6 23 6 23 12"/></svg>
                   </div>
                   <div style={{fontSize:'15px',fontWeight:700,fontFamily:FONT_DISPLAY}}>Nenhum resultado ainda</div>
                   <div style={{fontSize:'13px',color:C.muted,maxWidth:'300px',lineHeight:1.7}}>Marque seus sinais como Green ou Red no Histórico para ver seu desempenho real.</div>
-                  <button onClick={()=>setTab('historico')} style={{background:C.orange,color:'#0A0A0A',border:'none',borderRadius:'8px',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginTop:'4px'}}>
+                  <button onClick={()=>setTab('historico')} style={{background:C.orange,color:'#0A0A0A',border:'none',borderRadius:0,boxShadow:'4px 4px 0 #000',textTransform:'uppercase',letterSpacing:'.04em',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',marginTop:'4px'}}>
                     Ir para Histórico →
                   </button>
                 </div>
@@ -1516,7 +1524,7 @@ export default function App() {
                       {label:'Drawdown Máx.',value:`R$${fmt(drawdownMax)}`,color: drawdownMax > 0 ? C.red : C.muted,sub:'maior queda do pico'},
                       {label:'Sequência Negativa',value:sequenciaRedsMax,color: sequenciaRedsMax >= 3 ? C.red : C.text,sub:'reds seguidos, máx.'},
                     ].map((k,i) => (
-                      <div key={i} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'12px',padding:'16px'}}>
+                      <div key={i} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'16px'}}>
                         <div style={{fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1.2px',textTransform:'uppercase',marginBottom:'8px'}}>{k.label}</div>
                         <div style={{fontSize:'21px',fontWeight:800,color:k.color,letterSpacing:'-.4px',lineHeight:1.1,marginBottom:'4px',fontFamily:FONT_MONO}}>{k.value}</div>
                         <div style={{fontSize:'11px',color:C.muted}}>{k.sub}</div>
@@ -1527,7 +1535,7 @@ export default function App() {
                   {/* Calibração por faixa de score — junta apostado + auditoria
                       manual, pra mostrar se score realmente correlaciona com
                       taxa de acerto real ou se é só decoração. */}
-                  <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',overflow:'hidden',marginBottom:'16px'}}>
+                  <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',overflow:'hidden',marginBottom:'16px'}}>
                     <div style={{padding:'13px 16px',borderBottom:`1px solid ${C.border}`}}>
                       <div style={{fontSize:'13px',fontWeight:700,marginBottom:'2px'}}>Calibração por Faixa de Score</div>
                       <div style={{fontSize:'11px',color:C.muted}}>
@@ -1560,7 +1568,7 @@ export default function App() {
                   </div>
 
                   {encerrados.length > 1 && (
-                    <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',padding:'18px',marginBottom:'16px',position:'relative',overflow:'hidden'}}>
+                    <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'18px',marginBottom:'16px',position:'relative',overflow:'hidden'}}>
                       <div style={{position:'absolute',top:0,left:0,right:0,height:'1.5px',background: lucroTotal>=0 ? C.green : C.red}}/>
                       <div style={{fontSize:'13px',fontWeight:700,marginBottom:'4px'}}>Curva de Lucro Acumulado</div>
                       <div style={{fontSize:'11px',color:C.muted,marginBottom:'16px'}}>Evolução sinal a sinal, do mais antigo pro mais recente</div>
@@ -1606,7 +1614,7 @@ export default function App() {
                     { titulo: 'Desempenho por Mercado', dados: desempenhoPorMercado },
                     { titulo: 'Desempenho por Liga/Competição', dados: desempenhoPorLiga },
                   ].map(({ titulo, dados }) => dados.length > 0 && (
-                    <div key={titulo} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',overflow:'hidden',marginBottom:'16px'}}>
+                    <div key={titulo} style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',overflow:'hidden',marginBottom:'16px'}}>
                       <div style={{padding:'13px 16px',borderBottom:`1px solid ${C.border}`,fontSize:'13px',fontWeight:700}}>{titulo}</div>
                       <div style={{overflowX:'auto'}}>
                         <table style={{width:'100%',borderCollapse:'collapse',minWidth:'480px'}}>
@@ -1636,7 +1644,7 @@ export default function App() {
                     </div>
                   ))}
 
-                  <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'14px',overflow:'hidden'}}>
+                  <div style={{background:C.bg3,border:`1px solid ${C.border}`,borderRadius:'2px',overflow:'hidden'}}>
                     <div style={{padding:'13px 16px',borderBottom:`1px solid ${C.border}`,fontSize:'13px',fontWeight:700}}>Detalhamento por sinal</div>
                     <div style={{overflowX:'auto'}}>
                       <table style={{width:'100%',borderCollapse:'collapse',minWidth:'480px'}}>
@@ -1654,14 +1662,14 @@ export default function App() {
                             return (
                               <tr key={s.id} style={{borderBottom:`1px solid ${C.border}`}}>
                                 <td style={{padding:'11px 14px',fontSize:'12.5px',color:C.text,fontWeight:600,whiteSpace:'nowrap'}}>{s.evento}</td>
-                                <td style={{padding:'11px 14px'}}><span style={{background:C.orangeDim,color:C.orangeGlow,borderRadius:'20px',padding:'2px 8px',fontSize:'10px',fontWeight:700}}>{s.mercado}</span></td>
+                                <td style={{padding:'11px 14px'}}><span style={{background:C.orangeDim,color:C.orangeGlow,borderRadius:'2px',padding:'2px 8px',fontSize:'10px',fontWeight:700}}>{s.mercado}</span></td>
                                 <td style={{padding:'11px 14px',fontSize:'15px',fontWeight:800,color:isG?C.green:C.red,fontFamily:FONT_MONO}}>{s.score}</td>
                                 <td style={{padding:'11px 14px',fontSize:'12px',color:C.muted}}>{s.odd}</td>
                                 <td style={{padding:'11px 14px',fontSize:'12px',color:C.muted}}>R${fmt(s.stake)}</td>
                                 <td style={{padding:'11px 14px',fontSize:'13px',fontWeight:700,color: s.lucro_real>=0 ? C.green : C.red,fontFamily:FONT_MONO}}>{s.lucro_real>=0?'+':''}R${fmt(Math.abs(s.lucro_real))}</td>
                                 <td style={{padding:'11px 14px',fontSize:'12px',fontWeight:600,color: sRoi>=0 ? C.green : C.red,fontFamily:FONT_MONO}}>{sRoi>=0?'+':''}{sRoi.toFixed(1)}%</td>
                                 <td style={{padding:'11px 14px'}}>
-                                  <span style={{background: isG?C.greenDim:C.redDim,color:isG?C.green:C.red,border:`1px solid ${isG?'rgba(0,208,132,.3)':'rgba(255,77,77,.3)'}`,borderRadius:'20px',padding:'3px 10px',fontSize:'10px',fontWeight:800}}>
+                                  <span style={{background: isG?C.greenDim:C.redDim,color:isG?C.green:C.red,border:`1px solid ${isG?'rgba(0,208,132,.3)':'rgba(255,77,77,.3)'}`,borderRadius:'2px',padding:'3px 10px',fontSize:'10px',fontWeight:800}}>
                                     {isG ? '✓ GREEN' : '✗ RED'}
                                   </span>
                                 </td>
@@ -1689,22 +1697,22 @@ export default function App() {
             const terminou = !scanRodando && scanResultados.length > 0;
             return (
             <div>
-              <div style={{fontSize:'10px',fontWeight:700,color:C.orange,letterSpacing:'2px',textTransform:'uppercase',marginBottom:'6px'}}>Scanner de Grade · Beta</div>
-              <div style={{fontSize:'21px',fontWeight:800,letterSpacing:'-.3px',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Varredura do dia</div>
+              <div style={{fontFamily:FONT_MONO,fontSize:'10px',fontWeight:500,color:C.orange,letterSpacing:'2.5px',textTransform:'uppercase',marginBottom:'6px'}}>Scanner de Grade · Beta</div>
+              <div style={{fontSize:'23px',fontWeight:900,letterSpacing:'-.01em',textTransform:'uppercase',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Varredura do dia</div>
               <div style={{fontSize:'13px',color:C.muted,marginBottom:'18px'}}>Triagem barata da grade inteira, análise completa só nos aptos — cada sinal marcado com origem "scanner" pra calibração separada. Em teste: nada publica sozinho.</div>
 
-              {scanErro && <div style={{background:C.redDim,border:`1px solid ${C.red}`,borderRadius:'10px',padding:'10px 14px',fontSize:'12px',color:C.red,marginBottom:'14px'}}>{scanErro}</div>}
+              {scanErro && <div style={{background:C.redDim,border:`1px solid ${C.red}`,borderRadius:'2px',padding:'10px 14px',fontSize:'12px',color:C.red,marginBottom:'14px'}}>{scanErro}</div>}
 
               <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
-                <button onClick={()=>carregarTriagem(true)} disabled={scanTriagemLoading||scanRodando} style={{background:C.bg3,color:C.text,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'10px 18px',fontSize:'12px',fontWeight:600,cursor:(scanTriagemLoading||scanRodando)?'default':'pointer',fontFamily:'inherit',opacity:(scanTriagemLoading||scanRodando)?.5:1}}>
+                <button onClick={()=>carregarTriagem(true)} disabled={scanTriagemLoading||scanRodando} style={{background:C.bg3,color:C.text,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'10px 18px',fontSize:'12px',fontWeight:600,cursor:(scanTriagemLoading||scanRodando)?'default':'pointer',fontFamily:'inherit',opacity:(scanTriagemLoading||scanRodando)?.5:1}}>
                   {scanTriagemLoading ? 'Rodando triagem…' : 'Refazer triagem'}
                 </button>
                 {!scanRodando ? (
-                  <button onClick={rodarScanner} disabled={!aptosAtivos.length||scanTriagemLoading} style={{background:C.orange,color:'#0A0A0A',border:'none',borderRadius:'8px',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:aptosAtivos.length?'pointer':'default',fontFamily:'inherit',opacity:aptosAtivos.length?1:.5}}>
+                  <button onClick={rodarScanner} disabled={!aptosAtivos.length||scanTriagemLoading} style={{background:C.orange,color:'#0A0A0A',border:'none',borderRadius:0,boxShadow:'4px 4px 0 #000',textTransform:'uppercase',letterSpacing:'.04em',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:aptosAtivos.length?'pointer':'default',fontFamily:'inherit',opacity:aptosAtivos.length?1:.5}}>
                     Analisar {aptosAtivos.length || ''} aptos
                   </button>
                 ) : (
-                  <button onClick={pararScanner} style={{background:C.redDim,color:C.red,border:`1px solid ${C.red}`,borderRadius:'8px',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+                  <button onClick={pararScanner} style={{background:C.redDim,color:C.red,border:`1px solid ${C.red}`,borderRadius:'2px',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
                     Parar após o jogo atual
                   </button>
                 )}
@@ -1716,9 +1724,9 @@ export default function App() {
                     ['Jogos na grade', scanTriagem.totalGrade, C.text],
                     ['Aptos na triagem', aptosAtivos.length, C.text],
                     ['Analisados', `${Math.min(scanResultados.length, totalLoop)}/${totalLoop}`, C.text],
-                    ['Aprovados', aprovados.length, aprovados.length ? C.green : C.muted],
+                    ['Aprovados', aprovados.length, aprovados.length ? C.orange : C.muted],
                   ].map(([label, valor, cor]) => (
-                    <div key={label} style={{background:C.bg2,borderRadius:'10px',padding:'12px 14px'}}>
+                    <div key={label} style={{background:C.bg2,borderRadius:'2px',padding:'12px 14px'}}>
                       <div style={{fontSize:'11px',color:C.muted,marginBottom:'4px'}}>{label}</div>
                       <div style={{fontSize:'20px',fontWeight:800,color:cor,fontFamily:FONT_DISPLAY}}>{valor}</div>
                     </div>
@@ -1727,7 +1735,7 @@ export default function App() {
               )}
 
               {emAndamento && (
-                <div style={{background:C.bg2,border:`1px solid ${C.border}`,borderRadius:'12px',padding:'14px 16px',marginBottom:'18px'}}>
+                <div style={{background:C.bg2,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'14px 16px',marginBottom:'18px'}}>
                   <div style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',color:C.muted,marginBottom:'8px'}}>
                     <span>Analisando {Math.min(scanIdx + 1, totalLoop)} de {totalLoop} — {itemAtual ? `${itemAtual.evento} (${itemAtual.mercado})` : ''}</span>
                     <span>~{Math.max(1, Math.round((totalLoop - scanIdx) * 10 / 60))} min restantes</span>
@@ -1742,21 +1750,21 @@ export default function App() {
                 <div style={{marginBottom:'18px'}}>
                   <div style={{fontSize:'14px',fontWeight:700,marginBottom:'2px'}}>Melhores oportunidades</div>
                   <div style={{fontSize:'12px',color:C.muted,marginBottom:'10px'}}>Ranqueadas por folga sobre o mínimo · aguardando sua revisão — nada foi publicado</div>
-                  {aprovados.length === 0 && <div style={{fontSize:'12px',color:C.muted,background:C.bg2,borderRadius:'10px',padding:'14px'}}>Nenhum sinal aprovado nesta varredura. Isso é o sistema funcionando — grade fraca não vira oportunidade na marra.</div>}
+                  {aprovados.length === 0 && <div style={{fontSize:'12px',color:C.muted,background:C.bg2,borderRadius:'2px',padding:'14px'}}>Nenhum sinal aprovado nesta varredura. Isso é o sistema funcionando — grade fraca não vira oportunidade na marra.</div>}
                   {aprovados.map(entry => {
                     const r = entry.result;
                     const fid = entry.item.fixtureId;
                     const folga = r.score - (r._minScore ?? 0);
                     const temAlerta = (r.alertas || []).length > 0;
                     return (
-                      <div key={fid} style={{background:C.bg2,border:`1px solid ${temAlerta ? C.orangeBorder : C.border}`,borderRadius:'12px',padding:'14px 16px',marginBottom:'10px'}}>
+                      <div key={fid} style={{background:C.bg2,border:`1px solid ${temAlerta ? C.orangeBorder : C.border}`,borderRadius:'2px',padding:'14px 16px',marginBottom:'10px'}}>
                         <div style={{display:'flex',justifyContent:'space-between',gap:'10px',flexWrap:'wrap',alignItems:'flex-start'}}>
                           <div style={{minWidth:0}}>
                             <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
                               <span style={{fontSize:'14px',fontWeight:700}}>{r.evento || entry.item.evento}</span>
-                              <span style={{background:C.greenDim,color:C.green,fontSize:'11px',fontWeight:700,padding:'2px 10px',borderRadius:'10px'}}>Score {r.score}</span>
-                              {folga <= 2 && <span style={{background:C.orangeDim,color:C.orange,fontSize:'11px',fontWeight:700,padding:'2px 10px',borderRadius:'10px'}}>no limite</span>}
-                              <span style={{background:C.bg3,color:C.muted,fontSize:'11px',padding:'2px 10px',borderRadius:'10px'}}>scanner</span>
+                              <span style={{fontFamily:FONT_MONO,color:C.orange,border:`1px solid ${C.orangeBorder}`,fontSize:'11px',fontWeight:500,padding:'2px 10px'}}>Score {r.score}</span>
+                              {folga <= 2 && <span style={{background:C.orangeDim,color:C.orange,fontSize:'11px',fontWeight:700,padding:'2px 10px',borderRadius:'2px'}}>no limite</span>}
+                              <span style={{background:C.bg3,color:C.muted,fontSize:'11px',padding:'2px 10px',borderRadius:'2px'}}>scanner</span>
                             </div>
                             <div style={{fontSize:'12px',color:C.muted,marginTop:'4px'}}>
                               {(r.competicao || entry.item.liga)} · {entry.item.mercado} · odd est. {r.odds_estimada || '—'} · triagem +{entry.item.margem}pp
@@ -1771,17 +1779,17 @@ export default function App() {
                             )}
                           </div>
                           <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
-                            <button onClick={()=>setScanDetalhe(scanDetalhe===fid?null:fid)} style={{background:C.bg3,color:C.text,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}>
+                            <button onClick={()=>setScanDetalhe(scanDetalhe===fid?null:fid)} style={{background:C.bg3,color:C.text,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'8px 14px',fontSize:'12px',fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}>
                               {scanDetalhe===fid?'Fechar':'Detalhes'}
                             </button>
                             {scanRegistrados[fid] ? (
                               <span style={{color:C.green,fontSize:'12px',fontWeight:700,alignSelf:'center'}}>✓ registrado</span>
                             ) : (
-                              <button onClick={()=>registrarSinalScanner(entry)} disabled={scanRegistrando===fid} style={{background:C.greenDim,color:C.green,border:`1px solid ${C.green}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',opacity:scanRegistrando===fid?.5:1}}>
+                              <button onClick={()=>registrarSinalScanner(entry)} disabled={scanRegistrando===fid} style={{background:C.greenDim,color:C.green,border:`1px solid ${C.green}`,borderRadius:'2px',padding:'8px 14px',fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',opacity:scanRegistrando===fid?.5:1}}>
                                 {scanRegistrando===fid?'Registrando…':'Registrar sinal'}
                               </button>
                             )}
-                            <button onClick={()=>setScanDispensados(prev=>({...prev,[fid]:true}))} style={{background:'none',color:C.muted,border:`1px solid ${C.border}`,borderRadius:'8px',padding:'8px 14px',fontSize:'12px',cursor:'pointer',fontFamily:'inherit'}}>
+                            <button onClick={()=>setScanDispensados(prev=>({...prev,[fid]:true}))} style={{background:'none',color:C.muted,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'8px 14px',fontSize:'12px',cursor:'pointer',fontFamily:'inherit'}}>
                               Dispensar
                             </button>
                           </div>
@@ -1840,7 +1848,7 @@ export default function App() {
 
       <style>{`
         @keyframes spin{to{transform:rotate(360deg)}}
-        @keyframes pulseOrange{0%,100%{box-shadow:0 0 0 0 rgba(255,122,0,.4)}60%{box-shadow:0 0 0 6px rgba(255,122,0,0)}}
+        @keyframes pulseOrange{0%,100%{box-shadow:0 0 0 0 rgba(255,94,4,.4)}60%{box-shadow:0 0 0 6px rgba(255,94,4,0)}}
         input:focus,textarea:focus{border-color:${C.orangeBorder}!important;box-shadow:0 0 0 3px ${C.orangeDim}}
         button:hover{opacity:.88}
         @media(max-width:900px){
@@ -1852,9 +1860,10 @@ export default function App() {
             flex-direction:row!important;width:100%!important;height:auto!important;
             position:sticky!important;top:56px!important;border-right:none!important;
             border-bottom:1px solid ${C.border};padding:8px 10px!important;
-            overflow-x:auto;justify-content:center;
+            overflow-x:auto;justify-content:flex-start;
           }
-          .nav-rail button{flex-direction:row!important;padding:8px 12px!important;margin:0 4px!important}
+          .nav-rail button{width:auto!important;border-left:none!important;padding:8px 12px!important;margin:0 2px!important;white-space:nowrap}
+          .nav-sec{display:none!important}
           .verdict-card{flex-direction:column;text-align:center}
           .criteria-split{flex-direction:column}
           .criteria-split > div:nth-child(2){width:100%!important;height:1px!important}
