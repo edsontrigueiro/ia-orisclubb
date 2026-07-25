@@ -1,6 +1,22 @@
 <svg width="44" height="44" viewBox="0 0 44 44" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect width="44" height="44" rx="10" fill="#0A0A0A"/>
-  <rect x="1" y="1" width="42" height="42" rx="9" fill="rgba(255,122,0,.12)" stroke="#FF7A00" stroke-width="1.5"/>
-  <circle cx="22" cy="22" r="11" fill="none" stroke="#FF7A00" stroke-width="2.6" stroke-dasharray="52 17" stroke-linecap="round" transform="rotate(-90 22 22)"/>
-  <circle cx="22" cy="11" r="2.4" fill="#FF7A00"/>
+  <rect width="44" height="44" fill="#0A0A0A"/>
+  <defs>
+    <clipPath id="sym">
+      <path fill-rule="evenodd" clip-rule="evenodd" d="M22 5A17 17 0 1 1 21.99 5ZM25.5 15.5 16 24.5h5.6L18.5 30l9.8-9.3h-5.7z"/>
+    </clipPath>
+  </defs>
+  <g clip-path="url(#sym)">
+    <g transform="rotate(45 22 22)">
+      <rect x="-12" y="-4" width="68" height="3.1" fill="#FF5E04"/>
+      <rect x="-12" y="1.6" width="68" height="3.1" fill="#FF5E04"/>
+      <rect x="-12" y="7.2" width="68" height="3.1" fill="#FF5E04"/>
+      <rect x="-12" y="12.8" width="68" height="3.1" fill="#FF5E04"/>
+      <rect x="-12" y="18.4" width="68" height="3.1" fill="#FF5E04"/>
+      <rect x="-12" y="24" width="68" height="3.1" fill="#FF5E04"/>
+      <rect x="-12" y="29.6" width="68" height="3.1" fill="#FF5E04"/>
+      <rect x="-12" y="35.2" width="68" height="3.1" fill="#FF5E04"/>
+      <rect x="-12" y="40.8" width="68" height="3.1" fill="#FF5E04"/>
+      <rect x="-12" y="46.4" width="68" height="3.1" fill="#FF5E04"/>
+    </g>
+  </g>
 </svg>
