@@ -260,6 +260,8 @@ export default function App() {
   const [scanRegistrados, setScanRegistrados] = useState({});
   const [scanDispensados, setScanDispensados] = useState({});
   const [scanVerDescartes, setScanVerDescartes] = useState(false);
+  // Sub-aba interna do scanner: aptos | aprovados | rejeitados
+  const [scanSub, setScanSub] = useState('aptos');
   const [scanVerReprovados, setScanVerReprovados] = useState(false);
   // Ref (não state) de propósito: o loop assíncrono lê o valor ATUAL na
   // hora de decidir se continua — state capturado na closure não serviria.
@@ -279,10 +281,11 @@ export default function App() {
   }
 
   async function rodarScanner() {
-    const aptos = (scanTriagem?.aptos || []).filter(a => !scanDispensados[a.fixtureId]);
+    const chaveDe = a => a.chave || `${a.fixtureId}::${a.mercado}`;
+    const aptos = (scanTriagem?.aptos || []).filter(a => !scanDispensados[chaveDe(a)]);
     if (!aptos.length || scanRodando) return;
     scanCancelRef.current = false;
-    setScanRodando(true); setScanResultados([]); setScanIdx(0); setScanErro(null);
+    setScanRodando(true); setScanResultados([]); setScanIdx(0); setScanErro(null); setScanSub('aptos');
     // Sequencial DE PROPÓSITO: cada /api/analyze já dispara 7-9 chamadas de
     // API-Football por dentro (serializadas pelo semáforo do fetchUtil) +
     // 1 chamada de IA. Paralelizar aqui só empilharia timeout em cima do
@@ -306,6 +309,8 @@ export default function App() {
     }
     setScanIdx(aptos.length);
     setScanRodando(false);
+    // Terminou a varredura: o que interessa agora é o resultado, não a fila.
+    setScanSub('aprovados');
   }
 
   function pararScanner() { scanCancelRef.current = true; }
@@ -316,7 +321,8 @@ export default function App() {
   async function registrarSinalScanner(entry) {
     const r = entry.result;
     if (!r || scanRegistrando) return;
-    setScanRegistrando(entry.item.fixtureId);
+    const k = entry.item.chave || `${entry.item.fixtureId}::${entry.item.mercado}`;
+    setScanRegistrando(k);
     try {
       const body = {
         evento: r.evento || entry.item.evento,
@@ -339,7 +345,7 @@ export default function App() {
         body: JSON.stringify(body),
       });
       if (sessionExpired) { goToLoginExpired(); return; }
-      if (res.ok) setScanRegistrados(prev => ({ ...prev, [entry.item.fixtureId]: true }));
+      if (res.ok) setScanRegistrados(prev => ({ ...prev, [k]: true }));
       else setScanErro('Falha ao registrar o sinal — tente de novo.');
     } catch { setScanErro('Erro de conexão ao registrar o sinal.'); }
     finally { setScanRegistrando(null); }
@@ -1686,157 +1692,206 @@ export default function App() {
           )}
           {/* ════ SCANNER DE GRADE (BETA) ════ */}
           {tab === 'scanner' && (() => {
-            const aptosAtivos = (scanTriagem?.aptos || []).filter(a => !scanDispensados[a.fixtureId]);
+            // Chave única = fixture + mercado. O mesmo jogo pode aparecer
+            // em vários mercados desde a triagem v2, então usar só o
+            // fixtureId faria um "Dispensar" derrubar todos os mercados
+            // daquele jogo de uma vez.
+            const kOf = x => x.chave || `${x.fixtureId}::${x.mercado}`;
+            const aptosAtivos = (scanTriagem?.aptos || []).filter(a => !scanDispensados[kOf(a)]);
             const aprovados = scanResultados
-              .filter(r => !r.erro && r.result?.aprovado && !scanDispensados[r.item.fixtureId])
+              .filter(r => !r.erro && r.result?.aprovado && !scanDispensados[kOf(r.item)])
               .sort((a, b) => ((b.result.score - (b.result._minScore ?? 0)) - (a.result.score - (a.result._minScore ?? 0))));
             const reprovados = scanResultados.filter(r => r.erro || !r.result?.aprovado);
             const totalLoop = aptosAtivos.length;
             const emAndamento = scanRodando && totalLoop > 0;
             const itemAtual = emAndamento ? aptosAtivos[Math.min(scanIdx, totalLoop - 1)] : null;
-            const terminou = !scanRodando && scanResultados.length > 0;
+            const descartes = scanTriagem?.descartes || [];
+            const SUBTABS = [
+              { id:'aptos',      label:'Aptos',      count: aptosAtivos.length },
+              { id:'aprovados',  label:'Aprovados',  count: aprovados.length },
+              { id:'rejeitados', label:'Rejeitados', count: reprovados.length + descartes.length },
+            ];
             return (
-            <div>
-              <div style={{fontFamily:FONT_MONO,fontSize:'10px',fontWeight:500,color:C.orange,letterSpacing:'2.5px',textTransform:'uppercase',marginBottom:'6px'}}>Scanner de Grade · Beta</div>
+            <div className="fade-up">
+              <div style={{fontFamily:FONT_MONO,fontSize:'10px',fontWeight:500,color:C.orange,letterSpacing:'2.5px',textTransform:'uppercase',marginBottom:'6px'}}>Scanner de grade · beta</div>
               <div style={{fontSize:'23px',fontWeight:900,letterSpacing:'-.01em',textTransform:'uppercase',marginBottom:'4px',fontFamily:FONT_DISPLAY}}>Varredura do dia</div>
-              <div style={{fontSize:'13px',color:C.muted,marginBottom:'18px'}}>Triagem barata da grade inteira, análise completa só nos aptos — cada sinal marcado com origem "scanner" pra calibração separada. Em teste: nada publica sozinho.</div>
+              <div style={{fontSize:'13px',color:C.muted,marginBottom:'18px',maxWidth:'620px',lineHeight:1.6}}>Todos os mercados com parâmetro no sistema são precificados na triagem. Cada aprovação aguarda revisão — nada publica sozinho.</div>
 
-              {scanErro && <div style={{background:C.redDim,border:`1px solid ${C.red}`,borderRadius:'2px',padding:'10px 14px',fontSize:'12px',color:C.red,marginBottom:'14px'}}>{scanErro}</div>}
+              {scanErro && <div className="fade-up" style={{background:C.redDim,border:`1px solid ${C.red}`,borderRadius:'2px',padding:'10px 14px',fontSize:'12px',color:C.red,marginBottom:'14px'}}>{scanErro}</div>}
 
-              <div style={{display:'flex',gap:'8px',marginBottom:'16px',flexWrap:'wrap'}}>
-                <button onClick={()=>carregarTriagem(true)} disabled={scanTriagemLoading||scanRodando} style={{background:C.bg3,color:C.text,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'10px 18px',fontSize:'12px',fontWeight:600,cursor:(scanTriagemLoading||scanRodando)?'default':'pointer',fontFamily:'inherit',opacity:(scanTriagemLoading||scanRodando)?.5:1}}>
+              <div style={{display:'flex',gap:'10px',marginBottom:'18px',flexWrap:'wrap'}}>
+                <button className="press" onClick={()=>carregarTriagem(true)} disabled={scanTriagemLoading||scanRodando} style={{background:'transparent',color:C.text,border:`1px solid ${C.border}`,borderRadius:0,padding:'11px 20px',fontSize:'12px',fontWeight:600,cursor:(scanTriagemLoading||scanRodando)?'default':'pointer',fontFamily:'inherit',opacity:(scanTriagemLoading||scanRodando)?.5:1}}>
                   {scanTriagemLoading ? 'Rodando triagem…' : 'Refazer triagem'}
                 </button>
                 {!scanRodando ? (
-                  <button onClick={rodarScanner} disabled={!aptosAtivos.length||scanTriagemLoading} style={{background:C.orange,color:'#0A0A0A',border:'none',borderRadius:0,boxShadow:'4px 4px 0 #000',textTransform:'uppercase',letterSpacing:'.04em',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:aptosAtivos.length?'pointer':'default',fontFamily:'inherit',opacity:aptosAtivos.length?1:.5}}>
+                  <button className="press" onClick={rodarScanner} disabled={!aptosAtivos.length||scanTriagemLoading} style={{background:C.orange,color:'#0A0A0A',border:'none',borderRadius:0,boxShadow:'4px 4px 0 #000',textTransform:'uppercase',letterSpacing:'.04em',padding:'11px 22px',fontSize:'12px',fontWeight:800,cursor:aptosAtivos.length?'pointer':'default',fontFamily:FONT_DISPLAY,opacity:aptosAtivos.length?1:.5}}>
                     Analisar {aptosAtivos.length || ''} aptos
                   </button>
                 ) : (
-                  <button onClick={pararScanner} style={{background:C.redDim,color:C.red,border:`1px solid ${C.red}`,borderRadius:'2px',padding:'10px 22px',fontSize:'13px',fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
+                  <button className="press" onClick={pararScanner} style={{background:C.redDim,color:C.red,border:`1px solid ${C.red}`,borderRadius:0,padding:'11px 22px',fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit'}}>
                     Parar após o jogo atual
                   </button>
                 )}
               </div>
 
               {scanTriagem && (
-                <div style={{display:'grid',gridTemplateColumns:'repeat(auto-fit,minmax(130px,1fr))',gap:'10px',marginBottom:'16px'}}>
+                <div className="kpi-grid" style={{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:'1px',background:C.border,border:`1px solid ${C.border}`,marginBottom:'18px'}}>
                   {[
-                    ['Jogos na grade', scanTriagem.totalGrade, C.text],
-                    ['Aptos na triagem', aptosAtivos.length, C.text],
+                    ['Grade', scanTriagem.totalGrade, C.text],
+                    ['Candidatos', scanTriagem.totalCandidatos ?? aptosAtivos.length, C.text],
                     ['Analisados', `${Math.min(scanResultados.length, totalLoop)}/${totalLoop}`, C.text],
                     ['Aprovados', aprovados.length, aprovados.length ? C.orange : C.muted],
                   ].map(([label, valor, cor]) => (
-                    <div key={label} style={{background:C.bg2,borderRadius:'2px',padding:'12px 14px'}}>
-                      <div style={{fontSize:'11px',color:C.muted,marginBottom:'4px'}}>{label}</div>
-                      <div style={{fontSize:'20px',fontWeight:800,color:cor,fontFamily:FONT_DISPLAY}}>{valor}</div>
+                    <div key={label} style={{background:C.bg2,padding:'14px 16px'}}>
+                      <div style={{fontFamily:FONT_MONO,fontSize:'9px',color:C.muted2,letterSpacing:'1.5px',textTransform:'uppercase',marginBottom:'6px'}}>{label}</div>
+                      <div style={{fontSize:'22px',fontWeight:900,color:cor,fontFamily:FONT_DISPLAY}}>{valor}</div>
                     </div>
                   ))}
                 </div>
               )}
 
               {emAndamento && (
-                <div style={{background:C.bg2,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'14px 16px',marginBottom:'18px'}}>
-                  <div style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',color:C.muted,marginBottom:'8px'}}>
+                <div style={{background:C.bg2,border:`1px solid ${C.border}`,padding:'14px 16px',marginBottom:'18px'}}>
+                  <div style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',color:C.muted,marginBottom:'8px',flexWrap:'wrap'}}>
                     <span>Analisando {Math.min(scanIdx + 1, totalLoop)} de {totalLoop} — {itemAtual ? `${itemAtual.evento} (${itemAtual.mercado})` : ''}</span>
-                    <span>~{Math.max(1, Math.round((totalLoop - scanIdx) * 10 / 60))} min restantes</span>
+                    <span style={{fontFamily:FONT_MONO}}>~{Math.max(1, Math.round((totalLoop - scanIdx) * 10 / 60))} min</span>
                   </div>
-                  <div style={{height:'6px',background:C.bg3,borderRadius:'3px',overflow:'hidden'}}>
-                    <div style={{height:'100%',width:`${Math.round((Math.min(scanResultados.length,totalLoop)/Math.max(totalLoop,1))*100)}%`,background:C.orange,borderRadius:'3px',transition:'width .3s'}}/>
+                  <div style={{height:'4px',background:C.bg4,overflow:'hidden'}}>
+                    <div style={{height:'100%',width:`${Math.round((Math.min(scanResultados.length,totalLoop)/Math.max(totalLoop,1))*100)}%`,background:C.orange,transition:'width .45s cubic-bezier(.4,0,.2,1)'}}/>
                   </div>
                 </div>
               )}
 
-              {(aprovados.length > 0 || terminou) && (
-                <div style={{marginBottom:'18px'}}>
-                  <div style={{fontSize:'14px',fontWeight:700,marginBottom:'2px'}}>Melhores oportunidades</div>
-                  <div style={{fontSize:'12px',color:C.muted,marginBottom:'10px'}}>Ranqueadas por folga sobre o mínimo · aguardando sua revisão — nada foi publicado</div>
-                  {aprovados.length === 0 && <div style={{fontSize:'12px',color:C.muted,background:C.bg2,borderRadius:'2px',padding:'14px'}}>Nenhum sinal aprovado nesta varredura. Isso é o sistema funcionando — grade fraca não vira oportunidade na marra.</div>}
-                  {aprovados.map(entry => {
-                    const r = entry.result;
-                    const fid = entry.item.fixtureId;
-                    const folga = r.score - (r._minScore ?? 0);
-                    const temAlerta = (r.alertas || []).length > 0;
-                    return (
-                      <div key={fid} style={{background:C.bg2,border:`1px solid ${temAlerta ? C.orangeBorder : C.border}`,borderRadius:'2px',padding:'14px 16px',marginBottom:'10px'}}>
-                        <div style={{display:'flex',justifyContent:'space-between',gap:'10px',flexWrap:'wrap',alignItems:'flex-start'}}>
-                          <div style={{minWidth:0}}>
-                            <div style={{display:'flex',gap:'8px',alignItems:'center',flexWrap:'wrap'}}>
-                              <span style={{fontSize:'14px',fontWeight:700}}>{r.evento || entry.item.evento}</span>
-                              <span style={{fontFamily:FONT_MONO,color:C.orange,border:`1px solid ${C.orangeBorder}`,fontSize:'11px',fontWeight:500,padding:'2px 10px'}}>Score {r.score}</span>
-                              {folga <= 2 && <span style={{background:C.orangeDim,color:C.orange,fontSize:'11px',fontWeight:700,padding:'2px 10px',borderRadius:'2px'}}>no limite</span>}
-                              <span style={{background:C.bg3,color:C.muted,fontSize:'11px',padding:'2px 10px',borderRadius:'2px'}}>scanner</span>
-                            </div>
-                            <div style={{fontSize:'12px',color:C.muted,marginTop:'4px'}}>
-                              {(r.competicao || entry.item.liga)} · {entry.item.mercado} · odd est. {r.odds_estimada || '—'} · triagem +{entry.item.margem}pp
-                            </div>
-                            {temAlerta && <div style={{fontSize:'11px',color:C.orange,marginTop:'6px'}}>{(r.alertas||[]).length} alerta(s) — abra os detalhes antes de registrar</div>}
-                            {scanDetalhe === fid && (
-                              <div style={{marginTop:'10px',borderTop:`1px solid ${C.border}`,paddingTop:'10px',fontSize:'12px',color:C.text,lineHeight:1.6}}>
-                                <div style={{marginBottom:'6px'}}>{r.insight}</div>
-                                <div style={{color:C.muted,marginBottom:temAlerta?'8px':0}}>{r.resumo}</div>
-                                {(r.alertas||[]).map((a,i)=>(<div key={i} style={{fontSize:'11px',color:C.orange,marginTop:'4px'}}>• {a}</div>))}
-                              </div>
-                            )}
-                          </div>
-                          <div style={{display:'flex',gap:'6px',flexWrap:'wrap'}}>
-                            <button onClick={()=>setScanDetalhe(scanDetalhe===fid?null:fid)} style={{background:C.bg3,color:C.text,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'8px 14px',fontSize:'12px',fontWeight:600,cursor:'pointer',fontFamily:'inherit'}}>
-                              {scanDetalhe===fid?'Fechar':'Detalhes'}
-                            </button>
-                            {scanRegistrados[fid] ? (
-                              <span style={{color:C.green,fontSize:'12px',fontWeight:700,alignSelf:'center'}}>✓ registrado</span>
-                            ) : (
-                              <button onClick={()=>registrarSinalScanner(entry)} disabled={scanRegistrando===fid} style={{background:C.greenDim,color:C.green,border:`1px solid ${C.green}`,borderRadius:'2px',padding:'8px 14px',fontSize:'12px',fontWeight:700,cursor:'pointer',fontFamily:'inherit',opacity:scanRegistrando===fid?.5:1}}>
-                                {scanRegistrando===fid?'Registrando…':'Registrar sinal'}
-                              </button>
-                            )}
-                            <button onClick={()=>setScanDispensados(prev=>({...prev,[fid]:true}))} style={{background:'none',color:C.muted,border:`1px solid ${C.border}`,borderRadius:'2px',padding:'8px 14px',fontSize:'12px',cursor:'pointer',fontFamily:'inherit'}}>
-                              Dispensar
-                            </button>
-                          </div>
+              {/* Abas internas: aptos · aprovados · rejeitados */}
+              <div style={{display:'flex',gap:'2px',borderBottom:`1px solid ${C.border}`,marginBottom:'16px'}}>
+                {SUBTABS.map(st => (
+                  <button key={st.id} className="press" onClick={()=>setScanSub(st.id)} style={{
+                    background:'transparent',border:'none',borderBottom:`2px solid ${scanSub===st.id?C.orange:'transparent'}`,
+                    color: scanSub===st.id?C.text:C.muted,padding:'10px 16px',cursor:'pointer',fontFamily:'inherit',
+                    fontSize:'13px',fontWeight:scanSub===st.id?600:500,transition:'color .16s,border-color .16s',marginBottom:'-1px',
+                  }}>
+                    {st.label} <span style={{fontFamily:FONT_MONO,fontSize:'11px',color:scanSub===st.id?C.orange:C.muted2}}>{st.count}</span>
+                  </button>
+                ))}
+              </div>
+
+              {/* ── APTOS ── */}
+              {scanSub === 'aptos' && (
+                aptosAtivos.length === 0 ? (
+                  <div style={{fontSize:'12px',color:C.muted,background:C.bg2,padding:'16px'}}>Nenhum jogo apto na triagem de hoje.</div>
+                ) : (
+                  <div className="card-grid" style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(232px,1fr))',gap:'10px'}}>
+                    {aptosAtivos.map((a,i) => (
+                      <div key={kOf(a)} className="tile fade-up" style={{'--d':`${Math.min(i,14)*28}ms`,background:C.bg2,border:`1px solid ${C.border}`,padding:'13px 14px',display:'flex',flexDirection:'column',gap:'7px'}}>
+                        <div style={{display:'flex',justifyContent:'space-between',gap:'8px',alignItems:'flex-start'}}>
+                          <span style={{fontFamily:FONT_MONO,fontSize:'9px',color:C.muted2,letterSpacing:'1.2px',textTransform:'uppercase',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.liga}</span>
+                          <span style={{fontFamily:FONT_MONO,fontSize:'10px',color:a.margem>=0?C.orange:C.muted,whiteSpace:'nowrap'}}>{a.margem>=0?'+':''}{a.margem}pp</span>
+                        </div>
+                        <div style={{fontSize:'13px',fontWeight:600,color:C.text,lineHeight:1.35}}>{a.timeA}<span style={{color:C.muted2}}> vs </span>{a.timeB}</div>
+                        <div style={{marginTop:'auto',display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px',paddingTop:'6px',borderTop:`1px solid ${C.border}`}}>
+                          <span style={{fontSize:'11px',color:C.orange,fontWeight:600}}>{a.mercado}</span>
+                          <button className="press" onClick={()=>setScanDispensados(prev=>({...prev,[kOf(a)]:true}))} title="Remover da fila" style={{background:'none',border:'none',color:C.muted2,cursor:'pointer',fontSize:'14px',lineHeight:1,padding:'2px 4px',fontFamily:'inherit'}}>×</button>
                         </div>
                       </div>
-                    );
-                  })}
+                    ))}
+                  </div>
+                )
+              )}
+
+              {/* ── APROVADOS ── */}
+              {scanSub === 'aprovados' && (
+                aprovados.length === 0 ? (
+                  <div style={{fontSize:'12px',color:C.muted,background:C.bg2,padding:'16px',lineHeight:1.6}}>
+                    {scanResultados.length === 0
+                      ? 'Rode a varredura para ver as aprovações aqui.'
+                      : 'Nenhuma aprovação nesta varredura. Isso é o sistema funcionando — grade fraca não vira oportunidade na marra.'}
+                  </div>
+                ) : (
+                  <div className="card-grid" style={{display:'grid',gridTemplateColumns:'repeat(auto-fill,minmax(300px,1fr))',gap:'12px'}}>
+                    {aprovados.map((entry,i) => {
+                      const r = entry.result;
+                      const k = kOf(entry.item);
+                      const folga = r.score - (r._minScore ?? 0);
+                      const alertas = r.alertas || [];
+                      const temAlerta = alertas.length > 0;
+                      return (
+                        <div key={k} className="tile fade-up" style={{'--d':`${Math.min(i,14)*32}ms`,display:'flex',background:C.bg2,border:`1px solid ${temAlerta?C.orangeBorder:C.border}`}}>
+                          {/* Hachura da marca: laranja = limpo, cinza = com alerta */}
+                          <div style={{width:'6px',flexShrink:0,backgroundImage:`repeating-linear-gradient(45deg, ${temAlerta?C.muted2:C.orange} 0 3px, transparent 3px 7px)`}}/>
+                          <div style={{flex:1,minWidth:0,padding:'14px 15px'}}>
+                            <div style={{display:'flex',justifyContent:'space-between',gap:'8px',alignItems:'center',marginBottom:'7px'}}>
+                              <span style={{fontFamily:FONT_MONO,fontSize:'9px',color:C.muted2,letterSpacing:'1.2px',textTransform:'uppercase',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{r.competicao || entry.item.liga}</span>
+                              <span style={{fontFamily:FONT_MONO,fontSize:'12px',color:C.orange,border:`1px solid ${C.orangeBorder}`,padding:'1px 8px',whiteSpace:'nowrap'}}>{r.score}</span>
+                            </div>
+                            <div style={{fontSize:'14px',fontWeight:700,fontFamily:FONT_DISPLAY,color:C.text,lineHeight:1.3,marginBottom:'6px'}}>{r.evento || entry.item.evento}</div>
+                            <div style={{fontSize:'12px',color:C.muted,marginBottom:'4px'}}>
+                              {entry.item.mercado} · odd est. {r.odds_estimada || '—'} · <span style={{fontFamily:FONT_MONO,fontSize:'11px'}}>+{folga}</span> sobre o mínimo
+                            </div>
+                            {folga <= 2 && <div style={{fontFamily:FONT_MONO,fontSize:'10px',color:C.orange,letterSpacing:'.5px',marginBottom:'4px'}}>NO LIMITE</div>}
+                            {temAlerta && <div style={{fontSize:'11px',color:C.orange,marginBottom:'4px'}}>{alertas.length} alerta(s) — veja os detalhes antes de registrar</div>}
+                            {scanDetalhe === k && (
+                              <div className="fade-up" style={{marginTop:'9px',borderTop:`1px solid ${C.border}`,paddingTop:'9px',fontSize:'12px',color:C.text,lineHeight:1.6}}>
+                                <div style={{marginBottom:'6px'}}>{r.insight}</div>
+                                <div style={{color:C.muted}}>{r.resumo}</div>
+                                {alertas.map((a,ix)=>(<div key={ix} style={{fontSize:'11px',color:C.orange,marginTop:'5px'}}>• {a}</div>))}
+                              </div>
+                            )}
+                            <div style={{display:'flex',gap:'6px',flexWrap:'wrap',marginTop:'11px'}}>
+                              <button className="press" onClick={()=>setScanDetalhe(scanDetalhe===k?null:k)} style={{background:'transparent',color:C.text,border:`1px solid ${C.border}`,borderRadius:0,padding:'7px 13px',fontSize:'12px',fontWeight:500,cursor:'pointer',fontFamily:'inherit'}}>
+                                {scanDetalhe===k?'Fechar':'Detalhes'}
+                              </button>
+                              {scanRegistrados[k] ? (
+                                <span style={{fontFamily:FONT_MONO,color:C.orange,fontSize:'11px',alignSelf:'center',letterSpacing:'.5px'}}>REGISTRADO</span>
+                              ) : (
+                                <button className="press" onClick={()=>registrarSinalScanner(entry)} disabled={scanRegistrando===k} style={{background:C.text,color:'#0A0A0A',border:'none',borderRadius:0,padding:'7px 13px',fontSize:'11px',fontWeight:800,textTransform:'uppercase',letterSpacing:'.04em',cursor:'pointer',fontFamily:FONT_DISPLAY,opacity:scanRegistrando===k?.5:1}}>
+                                  {scanRegistrando===k?'…':'Registrar'}
+                                </button>
+                              )}
+                              <button className="press" onClick={()=>setScanDispensados(prev=>({...prev,[k]:true}))} style={{background:'none',color:C.muted,border:`1px solid ${C.border}`,borderRadius:0,padding:'7px 13px',fontSize:'12px',cursor:'pointer',fontFamily:'inherit'}}>
+                                Dispensar
+                              </button>
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )
+              )}
+
+              {/* ── REJEITADOS ── */}
+              {scanSub === 'rejeitados' && (
+                <div className="fade-up">
                   {reprovados.length > 0 && (
-                    <div style={{marginTop:'6px'}}>
-                      <button onClick={()=>setScanVerReprovados(v=>!v)} style={{background:'none',border:'none',color:C.muted,fontSize:'12px',cursor:'pointer',fontFamily:'inherit',padding:0}}>
-                        {scanVerReprovados?'▾':'▸'} {reprovados.length} reprovado(s)/erro(s) na análise completa — já registrados na Auditoria
-                      </button>
-                      {scanVerReprovados && reprovados.map((entry,i)=>(
-                        <div key={i} style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',color:C.muted,padding:'8px 4px',borderBottom:`1px solid ${C.border}`}}>
-                          <span>{entry.item.evento} · {entry.item.mercado}</span>
-                          <span>{entry.erro ? 'erro na análise' : `score ${entry.result?.score ?? '—'} < mín. ${entry.result?._minScore ?? '—'}`}</span>
+                    <div style={{marginBottom:'22px'}}>
+                      <div style={{fontFamily:FONT_MONO,fontSize:'10px',color:C.muted2,letterSpacing:'2px',textTransform:'uppercase',marginBottom:'8px'}}>// Reprovados na análise completa ({reprovados.length}) — já na Auditoria</div>
+                      {reprovados.map((entry,i)=>(
+                        <div key={kOf(entry.item)+i} className="row" style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',color:C.muted,padding:'9px 6px',borderBottom:`1px solid ${C.border}`}}>
+                          <span style={{minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{entry.item.evento} <span style={{color:C.muted2}}>· {entry.item.mercado}</span></span>
+                          <span style={{fontFamily:FONT_MONO,fontSize:'11px',whiteSpace:'nowrap'}}>{entry.erro ? 'erro' : `${entry.result?.score ?? '—'} < ${entry.result?._minScore ?? '—'}`}</span>
                         </div>
                       ))}
                     </div>
                   )}
-                </div>
-              )}
-
-              {scanTriagem && !scanRodando && scanResultados.length === 0 && aptosAtivos.length > 0 && (
-                <div style={{marginBottom:'18px'}}>
-                  <div style={{fontSize:'14px',fontWeight:700,marginBottom:'2px'}}>Aptos da triagem</div>
-                  <div style={{fontSize:'12px',color:C.muted,marginBottom:'10px'}}>Mercado precificado acima do mínimo da estratégia · ordenados por margem · clique em "Analisar" acima pra rodar os Gates + IA em todos</div>
-                  {aptosAtivos.map(a=>(
-                    <div key={a.fixtureId} style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',padding:'9px 4px',borderBottom:`1px solid ${C.border}`}}>
-                      <span style={{color:C.text}}>{a.evento} <span style={{color:C.muted2}}>· {a.liga}</span></span>
-                      <span style={{color:C.muted,whiteSpace:'nowrap'}}>{a.mercado} · +{a.margem}pp</span>
+                  {descartes.length > 0 && (
+                    <div>
+                      <div style={{fontFamily:FONT_MONO,fontSize:'10px',color:C.muted2,letterSpacing:'2px',textTransform:'uppercase',marginBottom:'8px'}}>// Descartados na triagem ({descartes.length}) — cada um com motivo</div>
+                      {(scanVerDescartes ? descartes : descartes.slice(0,40)).map((d,i)=>(
+                        <div key={i} className="row" style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',padding:'9px 6px',borderBottom:`1px solid ${C.border}`}}>
+                          <span style={{color:C.text,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{d.evento} <span style={{color:C.muted2}}>· {d.liga}</span></span>
+                          <span style={{color:C.muted2,textAlign:'right',fontSize:'11px'}}>{d.motivo}</span>
+                        </div>
+                      ))}
+                      {descartes.length > 40 && (
+                        <button className="press" onClick={()=>setScanVerDescartes(v=>!v)} style={{background:'none',border:'none',color:C.orange,fontSize:'12px',cursor:'pointer',fontFamily:'inherit',padding:'10px 6px'}}>
+                          {scanVerDescartes ? 'Mostrar menos' : `Ver todos os ${descartes.length}`}
+                        </button>
+                      )}
                     </div>
-                  ))}
-                </div>
-              )}
-
-              {scanTriagem?.descartes?.length > 0 && (
-                <div>
-                  <button onClick={()=>setScanVerDescartes(v=>!v)} style={{background:'none',border:'none',color:C.muted,fontSize:'12px',cursor:'pointer',fontFamily:'inherit',padding:0}}>
-                    {scanVerDescartes?'▾':'▸'} Descartes da triagem ({scanTriagem.descartes.length}) — cada um com motivo auditável
-                  </button>
-                  {scanVerDescartes && scanTriagem.descartes.map((d,i)=>(
-                    <div key={i} style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',padding:'8px 4px',borderBottom:`1px solid ${C.border}`}}>
-                      <span style={{color:C.text,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{d.evento} <span style={{color:C.muted2}}>· {d.liga}</span></span>
-                      <span style={{color:C.muted2,textAlign:'right'}}>{d.motivo}</span>
-                    </div>
-                  ))}
+                  )}
+                  {reprovados.length === 0 && descartes.length === 0 && (
+                    <div style={{fontSize:'12px',color:C.muted,background:C.bg2,padding:'16px'}}>Nada rejeitado ainda.</div>
+                  )}
                 </div>
               )}
             </div>
@@ -1848,6 +1903,24 @@ export default function App() {
 
       <style>{`
         @keyframes spin{to{transform:rotate(360deg)}}
+        /* Movimento sóbrio (playbook cap. 05: calma, nunca ansiedade ou
+           urgência): entradas curtas, hover discreto, nada de bounce,
+           glow pulsante ou parallax. Tudo <= 260ms. */
+        @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+        .fade-up{animation:fadeUp .26s cubic-bezier(.4,0,.2,1) both;animation-delay:var(--d,0ms)}
+        .tile{transition:border-color .16s ease, transform .16s ease}
+        .tile:hover{border-color:rgba(255,94,4,.34)!important;transform:translateY(-1px)}
+        .row{transition:background .14s ease}
+        .row:hover{background:${C.bg2}}
+        .press{transition:opacity .14s ease, transform .1s ease}
+        .press:active{transform:scale(.985)}
+        /* Acessibilidade e preferência do sistema: sem movimento se o
+           usuário pediu para reduzir. */
+        @media(prefers-reduced-motion:reduce){
+          .fade-up{animation:none}
+          .tile:hover{transform:none}
+          .press:active{transform:none}
+        }
         @keyframes pulseOrange{0%,100%{box-shadow:0 0 0 0 rgba(255,94,4,.4)}60%{box-shadow:0 0 0 6px rgba(255,94,4,0)}}
         input:focus,textarea:focus{border-color:${C.orangeBorder}!important;box-shadow:0 0 0 3px ${C.orangeDim}}
         button:hover{opacity:.88}
@@ -1868,6 +1941,7 @@ export default function App() {
           .criteria-split{flex-direction:column}
           .criteria-split > div:nth-child(2){width:100%!important;height:1px!important}
           .kpi-grid{grid-template-columns:repeat(2,1fr)!important}
+          .card-grid{grid-template-columns:1fr!important}
         }
       `}</style>
     </div>
