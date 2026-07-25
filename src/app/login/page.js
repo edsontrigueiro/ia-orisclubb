@@ -47,14 +47,24 @@ function LoginForm() {
 
   return (
     <div style={S.page}>
-      <div style={S.wrap}>
+      {/* Movimento sóbrio, mesmo padrão do painel (playbook cap. 05) */}
+      <style>{`
+        @keyframes fadeUp{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}
+        .fade-up{animation:fadeUp .3s cubic-bezier(.4,0,.2,1) both;animation-delay:var(--d,0ms)}
+        input{transition:border-color .16s ease, box-shadow .16s ease}
+        input:focus{border-color:${C.orangeBorder}!important;box-shadow:0 0 0 3px ${C.orangeDim}}
+        button{transition:opacity .14s ease, transform .1s ease}
+        button:active{transform:scale(.99)}
+        @media(prefers-reduced-motion:reduce){.fade-up{animation:none}button:active{transform:none}}
+      `}</style>
+      <div style={S.wrap} className="fade-up">
         <div style={S.logo}>
           {/* Logo original do Brand Content Playbook — mesma marca da landing */}
           <img src={LOGO_SRC} alt="Oris Club" style={{height:'34px',width:'auto',display:'block'}}/>
           <div style={S.brandSub}>// Camada de inteligência</div>
         </div>
 
-        <div style={S.card}>
+        <div style={S.card} className="fade-up">
           <div style={S.cardTop}/>
           <div style={{padding:'28px 28px 24px'}}>
             <div style={S.title}>Entrar na plataforma</div>
