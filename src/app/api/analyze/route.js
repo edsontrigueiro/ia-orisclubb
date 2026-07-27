@@ -1406,10 +1406,28 @@ export async function POST(request) {
   // Capturados aqui fora, antes do try, porque request.clone() falha com
   // "unusable" se chamado depois que o body já foi lido — então o fallback
   // de erro não pode depender de reconstruir a request lá no catch.
-  let jogo, mercado, origem;
+  let jogo, mercado, origem, identificacao;
 
   try {
-    ({ jogo, mercado, origem } = await request.json());
+    ({ jogo, mercado, origem, identificacao } = await request.json());
+
+    // identificacao — identificadores numéricos da API-Football vindos do
+    // chamador (scanner de grade e grade do dia já têm fixture.id e os ids
+    // dos dois times na mão). Quando presentes, o pipeline de dados pula a
+    // resolução por NOME, que quebra com acento, hífen, nome composto e
+    // homônimo entre países, e passa a analisar exatamente a partida
+    // selecionada em vez do "próximo confronto entre A e B".
+    //
+    // Sanitizado aqui: nunca repassar objeto livre do cliente adiante.
+    // Campo ausente ou inválido = caminho por nome, comportamento antigo.
+    const num = v => (Number.isFinite(Number(v)) && Number(v) > 0 ? Number(v) : null);
+    identificacao = identificacao && typeof identificacao === 'object' ? {
+      fixtureId: num(identificacao.fixtureId),
+      timeAId:   num(identificacao.timeAId),
+      timeBId:   num(identificacao.timeBId),
+      ligaId:    num(identificacao.ligaId),
+      season:    num(identificacao.season),
+    } : null;
     // Origem do disparo: 'manual' (aba Análises, comportamento histórico) ou
     // 'scanner' (varredura de grade). Persistida em analises_historico pra
     // permitir calibração SEPARADA — sinal vindo de varredura em massa tem
@@ -1426,7 +1444,11 @@ export async function POST(request) {
 
     // Cache: mesmo jogo+mercado analisado há menos de 2h devolve na hora,
     // sem gastar chamada de API-Football nem de IA de novo.
-    const cacheado = await lerCache(jogo, mercado);
+    // Dois jogos diferentes entre os MESMOS times (turno e returno, ou
+    // ida e volta de mata-mata) têm o mesmo texto "A vs B". Sem o fixture
+    // id na chave, o segundo confronto leria o resultado do primeiro.
+    const chaveJogo = identificacao?.fixtureId ? `fixture:${identificacao.fixtureId}` : jogo;
+    const cacheado = await lerCache(chaveJogo, mercado);
     if (cacheado) return NextResponse.json({ ...cacheado, _cache: true });
 
     const apiKey = process.env.ANTHROPIC_API_KEY;
@@ -1437,7 +1459,7 @@ export async function POST(request) {
     // calibração histórica desse mercado (Supabase) — são independentes,
     // não faz sentido esperar um pro outro começar.
     const [dadosReais, contextoCalibracao] = await Promise.all([
-      getFootballData(jogo, { mercado }),
+      getFootballData(jogo, { mercado, identificacao }),
       buscarContextoCalibracao(session.userId, mercado),
     ]);
 
@@ -1458,7 +1480,24 @@ export async function POST(request) {
     // chamada sem ajudar a análise. _debug_raw é diagnóstico temporário
     // (auditoria jul/2026) — vai pro dados_reais_snapshot (Supabase) via
     // dadosReais original abaixo, mas não deve ir pro prompt da IA.
-    const { jogos_recentes_time_a, jogos_recentes_time_b, _debug_raw, ...dadosParaPrompt } = dadosReais;
+    // odds_mercado_real e odds_1x2_devigada saem do bloco que a IA lê.
+    //
+    // Os Gates 7 e 8 já eram não-bloqueantes, então a odd não REPROVAVA
+    // nada — mas continuava dentro do prompt, e um modelo que enxerga o
+    // mercado precificando 91% dificilmente conclui 78% por conta própria.
+    // Ancoragem é influência mesmo sem ser bloqueio, e a decisão do Edson é
+    // que a odd não pode influenciar a solução da análise.
+    //
+    // Elas seguem intactas em dadosReais: continuam alimentando os Gates 7
+    // e 8 (que ficam informativos, como já eram), continuam sendo salvas em
+    // dados_reais_snapshot para auditoria e calibração, e continuam voltando
+    // no payload para a interface mostrar a leitura de valor de entrada.
+    // O que muda é só uma coisa: a IA decide sem ver o preço.
+    const {
+      jogos_recentes_time_a, jogos_recentes_time_b, _debug_raw,
+      odds_mercado_real, odds_1x2_devigada,
+      ...dadosParaPrompt
+    } = dadosReais;
     const blocoDados = dadosReais.disponivel
       ? `DADOS:\n${JSON.stringify(dadosParaPrompt)}`
       : `DADOS: indisponíveis. Motivo: ${dadosReais.motivo}`;
@@ -1561,7 +1600,7 @@ Responda SOMENTE JSON válido sem markdown, neste formato exato:
     }
 
     // Só cacheia análise real (nunca modo demo, nunca erro).
-    await salvarCache(jogo, mercado, result);
+    await salvarCache(chaveJogo, mercado, result);
 
     return NextResponse.json(result);
 
