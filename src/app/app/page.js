@@ -263,19 +263,38 @@ export default function App() {
   // Sub-aba interna do scanner: aptos | aprovados | rejeitados
   const [scanSub, setScanSub] = useState('aptos');
   const [scanVerReprovados, setScanVerReprovados] = useState(false);
+  // Data varrida pelo scanner. null = hoje (o backend resolve o fuso). Sai
+  // do mesmo controle de navegação usado na aba Jogos do Dia, pra varrer a
+  // grade de amanhã de manhã ou reprocessar um dia anterior.
+  const [scanData, setScanData] = useState(null);
+  // Identificação do confronto atual da aba Análises. Só existe quando o
+  // jogo chegou pela grade do dia (que traz os ids). Digitação manual
+  // zera esse estado: aí o backend volta a resolver por nome, que é o
+  // único caminho possível quando não há id nenhum.
+  const [jogoIdent, setJogoIdent] = useState(null);
   // Ref (não state) de propósito: o loop assíncrono lê o valor ATUAL na
   // hora de decidir se continua — state capturado na closure não serviria.
   const scanCancelRef = useRef(false);
 
-  async function carregarTriagem(refresh = false) {
+  async function carregarTriagem(refresh = false, dataAlvo = undefined) {
     setScanTriagemLoading(true); setScanErro(null);
     if (refresh) { setScanResultados([]); setScanRegistrados({}); setScanDispensados({}); }
     try {
-      const { res, sessionExpired } = await authFetch(`/api/scanner/triagem${refresh ? '?refresh=1' : ''}`);
+      // dataAlvo === undefined mantém a data atual da tela; null volta pra
+      // hoje. Sem parâmetro de data, o backend assume hoje sozinho.
+      const alvo = dataAlvo === undefined ? scanData : dataAlvo;
+      const qs = new URLSearchParams();
+      if (alvo) qs.set('data', alvo);
+      if (refresh) qs.set('refresh', '1');
+      const sufixo = qs.toString() ? `?${qs}` : '';
+      const { res, sessionExpired } = await authFetch(`/api/scanner/triagem${sufixo}`);
       if (sessionExpired) { goToLoginExpired(); return; }
       const data = await res.json();
       if (!res.ok) { setScanErro(data?.error || 'Falha na triagem da grade.'); return; }
       setScanTriagem(data);
+      // Ecoa a data que o backend efetivamente varreu — é ela que vira base
+      // da navegação, não o palpite do cliente.
+      setScanData(data?.data || null);
     } catch { setScanErro('Erro de conexão na triagem.'); }
     finally { setScanTriagemLoading(false); }
   }
@@ -298,7 +317,23 @@ export default function App() {
         const { res, sessionExpired } = await authFetch('/api/analyze', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ jogo: `${item.timeA} vs ${item.timeB}`, mercado: item.mercado, origem: 'scanner' }),
+          // identificacao: ids numéricos que a triagem já trouxe da
+          // API-Football. Com eles o backend analisa EXATAMENTE esta
+          // partida, sem procurar time por nome (que quebra com acento,
+          // hífen e nome composto) e sem resolver "próximo confronto entre
+          // A e B", que pode ser outro jogo.
+          body: JSON.stringify({
+            jogo: `${item.timeA} vs ${item.timeB}`,
+            mercado: item.mercado,
+            origem: 'scanner',
+            identificacao: {
+              fixtureId: item.fixtureId ?? null,
+              timeAId: item.timeAId ?? null,
+              timeBId: item.timeBId ?? null,
+              ligaId: item.ligaId ?? null,
+              season: item.season ?? null,
+            },
+          }),
         });
         if (sessionExpired) { setScanRodando(false); goToLoginExpired(); return; }
         const data = await res.json();
@@ -314,6 +349,38 @@ export default function App() {
   }
 
   function pararScanner() { scanCancelRef.current = true; }
+
+  // Navegação de data do scanner — mesma janela e mesmos limites da aba
+  // Jogos do Dia (7 dias pra trás, 2 pra frente), pra não existirem duas
+  // regras diferentes de "até onde dá pra ir" dentro do mesmo app.
+  function scannerIrParaDia(dias) {
+    if (scanRodando || scanTriagemLoading) return;
+    const hoje = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    const base = scanData || hoje;
+    const destino = deslocarData(base, dias);
+    if (dias > 0 && destino > deslocarData(hoje, 2)) return;
+    if (dias < 0 && destino < deslocarData(hoje, -7)) return;
+    setScanTriagem(null); setScanResultados([]); setScanRegistrados({}); setScanDispensados({});
+    setScanSub('aptos'); setScanData(destino);
+    carregarTriagem(false, destino);
+  }
+
+  function scannerIrParaHoje() {
+    if (scanRodando || scanTriagemLoading) return;
+    setScanTriagem(null); setScanResultados([]); setScanRegistrados({}); setScanDispensados({});
+    setScanSub('aptos'); setScanData(null);
+    carregarTriagem(false, null);
+  }
+
+  function scannerLimiteFuturo() {
+    const hoje = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    return (scanData || hoje) >= deslocarData(hoje, 2);
+  }
+
+  function scannerLimitePassado() {
+    const hoje = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+    return (scanData || hoje) <= deslocarData(hoje, -7);
+  }
 
   // "Aprovar" do ranking = registrar como sinal 'pegar', mesmo mapeamento do
   // saveSignal da aba Análises. Odd vem da estimativa da análise como ponto
@@ -503,8 +570,18 @@ export default function App() {
   }
 
   // Clique num jogo da grade já leva pra Análises com o confronto preenchido.
-  function analisarJogoDaGrade(timeA, timeB) {
-    setJogo(`${timeA} vs ${timeB}`);
+  // Recebe o objeto do jogo (não só os nomes) pra levar junto os ids da
+  // API-Football — assim a análise disparada dali identifica a partida
+  // exata em vez de procurar os times por nome.
+  function analisarJogoDaGrade(j) {
+    setJogo(`${j.timeA} vs ${j.timeB}`);
+    setJogoIdent({
+      fixtureId: j.id ?? null,
+      timeAId: j.timeAId ?? null,
+      timeBId: j.timeBId ?? null,
+      ligaId: j.ligaId ?? null,
+      season: j.season ?? null,
+    });
     setResult(null); setDecisao(null); setSaved(false);
     setTab('analises');
   }
@@ -540,7 +617,7 @@ export default function App() {
       const { res, sessionExpired } = await authFetch('/api/analyze', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ jogo, mercado: mkt }),
+        body: JSON.stringify({ jogo, mercado: mkt, identificacao: jogoIdent || undefined }),
       });
       if (sessionExpired) { goToLoginExpired(); return; }
       const data = await res.json();
@@ -579,7 +656,7 @@ export default function App() {
         setSaved(true);
         setSaveError(null);
         setTimeout(() => {
-          setJogo(''); setResult(null); setDecisao(null);
+          setJogo(''); setJogoIdent(null); setResult(null); setDecisao(null);
           setOdd(''); setStake(''); setSaved(false);
           // Vai pro Histórico — é justamente pra acompanhar o desempenho que
           // o sinal foi salvo; ficar na aba Análises com o formulário limpo
@@ -844,7 +921,7 @@ export default function App() {
                 <div style={{height:'1px',background:C.border,margin:'0 0 18px'}}/>
 
                 <label style={{display:'block',fontSize:'10px',fontWeight:700,color:C.muted2,letterSpacing:'1.5px',textTransform:'uppercase',marginBottom:'8px'}}>Jogo / Evento</label>
-                <textarea value={jogo} onChange={e=>setJogo(e.target.value)}
+                <textarea value={jogo} onChange={e=>{ setJogo(e.target.value); setJogoIdent(null); }}
                   placeholder={"Ex: Arsenal vs Chelsea\nEx: River Plate (Uruguai) vs Nacional"}
                   rows={3} style={{width:'100%',background:C.bg4,border:`1px solid ${C.border}`,color:C.text,borderRadius:'2px',padding:'10px 12px',fontSize:'13px',fontFamily:'inherit',resize:'none',outline:'none',boxSizing:'border-box',lineHeight:'1.6'}}/>
                 <div style={{fontSize:'10px',color:C.muted2,marginTop:'8px',marginBottom:'18px',display:'flex',alignItems:'center',gap:'5px'}}>
@@ -1171,7 +1248,7 @@ export default function App() {
                                   borderBottom: ji < g.jogos.length - 1 ? `1px solid ${C.border}` : 'none',
                                 }}>
                                   <div style={{display:'flex',alignItems:'center',gap:'8px',padding:'12px 14px'}}>
-                                    <button onClick={() => analisarJogoDaGrade(j.timeA, j.timeB)} style={{
+                                    <button onClick={() => analisarJogoDaGrade(j)} style={{
                                       flex:1,minWidth:0,display:'flex',alignItems:'center',gap:'12px',
                                       background:'none',border:'none',padding:0,
                                       cursor:'pointer',fontFamily:'inherit',textAlign:'left',
@@ -1203,7 +1280,7 @@ export default function App() {
                                         <path d="M18 20V10M12 20V4M6 20v-6"/>
                                       </svg>
                                     </button>
-                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.muted2} strokeWidth="2" style={{flexShrink:0}} onClick={() => analisarJogoDaGrade(j.timeA, j.timeB)}><polyline points="9 18 15 12 9 6"/></svg>
+                                    <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke={C.muted2} strokeWidth="2" style={{flexShrink:0}} onClick={() => analisarJogoDaGrade(j)}><polyline points="9 18 15 12 9 6"/></svg>
                                   </div>
 
                                   {statsVisiveis && (
@@ -1719,6 +1796,15 @@ export default function App() {
 
               {scanErro && <div className="fade-up" style={{background:C.redDim,border:`1px solid ${C.red}`,borderRadius:'2px',padding:'10px 14px',fontSize:'12px',color:C.red,marginBottom:'14px'}}>{scanErro}</div>}
 
+              <div style={{display:'flex',gap:'8px',alignItems:'center',marginBottom:'14px',flexWrap:'wrap'}}>
+                <button className="press" onClick={()=>scannerIrParaDia(-1)} disabled={scannerLimitePassado()||scanTriagemLoading||scanRodando} title="Dia anterior" style={{background:'transparent',color:C.text,border:`1px solid ${C.border}`,borderRadius:0,padding:'8px 12px',fontSize:'12px',cursor:'pointer',fontFamily:'inherit',opacity:(scannerLimitePassado()||scanTriagemLoading||scanRodando)?.35:1}}>◀</button>
+                <div style={{fontFamily:FONT_MONO,fontSize:'12px',color:C.text,letterSpacing:'.06em',minWidth:'104px',textAlign:'center'}}>
+                  {scanTriagem?.data || scanData || '—'}
+                </div>
+                <button className="press" onClick={()=>scannerIrParaDia(1)} disabled={scannerLimiteFuturo()||scanTriagemLoading||scanRodando} title="Próximo dia" style={{background:'transparent',color:C.text,border:`1px solid ${C.border}`,borderRadius:0,padding:'8px 12px',fontSize:'12px',cursor:'pointer',fontFamily:'inherit',opacity:(scannerLimiteFuturo()||scanTriagemLoading||scanRodando)?.35:1}}>▶</button>
+                <button className="press" onClick={scannerIrParaHoje} disabled={!scanData||scanTriagemLoading||scanRodando} style={{background:'transparent',color:C.muted,border:`1px solid ${C.border}`,borderRadius:0,padding:'8px 14px',fontSize:'11px',cursor:'pointer',fontFamily:FONT_MONO,letterSpacing:'.08em',textTransform:'uppercase',opacity:(!scanData||scanTriagemLoading||scanRodando)?.35:1}}>Hoje</button>
+              </div>
+
               <div style={{display:'flex',gap:'10px',marginBottom:'18px',flexWrap:'wrap'}}>
                 <button className="press" onClick={()=>carregarTriagem(true)} disabled={scanTriagemLoading||scanRodando} style={{background:'transparent',color:C.text,border:`1px solid ${C.border}`,borderRadius:0,padding:'11px 20px',fontSize:'12px',fontWeight:600,cursor:(scanTriagemLoading||scanRodando)?'default':'pointer',fontFamily:'inherit',opacity:(scanTriagemLoading||scanRodando)?.5:1}}>
                   {scanTriagemLoading ? 'Rodando triagem…' : 'Refazer triagem'}
@@ -1785,9 +1871,14 @@ export default function App() {
                       <div key={kOf(a)} className="tile fade-up" style={{'--d':`${Math.min(i,14)*28}ms`,background:C.bg2,border:`1px solid ${C.border}`,padding:'13px 14px',display:'flex',flexDirection:'column',gap:'7px'}}>
                         <div style={{display:'flex',justifyContent:'space-between',gap:'8px',alignItems:'flex-start'}}>
                           <span style={{fontFamily:FONT_MONO,fontSize:'9px',color:C.muted2,letterSpacing:'1.2px',textTransform:'uppercase',minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{a.liga}</span>
-                          <span style={{fontFamily:FONT_MONO,fontSize:'10px',color:a.margem>=0?C.orange:C.muted,whiteSpace:'nowrap'}}>{a.margem>=0?'+':''}{a.margem}pp</span>
+                          {a.semOdds
+                            ? <span style={{fontFamily:FONT_MONO,fontSize:'10px',color:C.muted2,whiteSpace:'nowrap'}} title="Sem odd publicada — a odd não barra jogo, só ordena a fila">s/ odd</span>
+                            : <span style={{fontFamily:FONT_MONO,fontSize:'10px',color:a.margem>=0?C.orange:C.muted,whiteSpace:'nowrap'}} title={a.valorEntrada||''}>{a.margem>=0?'+':''}{a.margem}pp</span>}
                         </div>
                         <div style={{fontSize:'13px',fontWeight:600,color:C.text,lineHeight:1.35}}>{a.timeA}<span style={{color:C.muted2}}> vs </span>{a.timeB}</div>
+                        {a.ligaCalibrada === false && (
+                          <div style={{fontFamily:FONT_MONO,fontSize:'9px',color:C.muted2,letterSpacing:'.1em',textTransform:'uppercase'}} title="Liga sem histórico de calibração no sistema — limiares dos Gates nunca foram validados nesta competição">liga não calibrada</div>
+                        )}
                         <div style={{marginTop:'auto',display:'flex',justifyContent:'space-between',alignItems:'center',gap:'8px',paddingTop:'6px',borderTop:`1px solid ${C.border}`}}>
                           <span style={{fontSize:'11px',color:C.orange,fontWeight:600}}>{a.mercado}</span>
                           <button className="press" onClick={()=>setScanDispensados(prev=>({...prev,[kOf(a)]:true}))} title="Remover da fila" style={{background:'none',border:'none',color:C.muted2,cursor:'pointer',fontSize:'14px',lineHeight:1,padding:'2px 4px',fontFamily:'inherit'}}>×</button>
