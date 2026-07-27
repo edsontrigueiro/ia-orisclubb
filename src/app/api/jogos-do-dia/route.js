@@ -44,7 +44,10 @@ export async function GET(request) {
     return NextResponse.json({ error: 'Parâmetro "data" inválido, use YYYY-MM-DD.' }, { status: 400 });
   }
 
-  const chave = `jogos-do-dia::${data}`;
+  // v2 no nome da chave: entradas gravadas antes dos ids de time existirem
+  // têm formato antigo e, se reaproveitadas, fariam a triagem produzir
+  // aptos sem identificação. Trocar a chave descarta essas de uma vez.
+  const chave = `jogos-do-dia-v2::${data}`;
   const cacheado = await getCached(chave, CACHE_TTL_MS);
   if (cacheado) return NextResponse.json({ ...cacheado, _cache: true });
 
@@ -71,9 +74,16 @@ export async function GET(request) {
         minuto: f.fixture?.status?.elapsed ?? null,
         liga: f.league?.name || 'Outra liga',
         ligaId: f.league?.id ?? null,
+        season: f.league?.season ?? null,
         pais: f.league?.country || null,
         timeA: f.teams?.home?.name || '?',
         timeB: f.teams?.away?.name || '?',
+        // Ids numéricos da API-Football. Consumidos por dois caminhos: o
+        // clique em "analisar" na grade (que passa a identificar a partida
+        // exata em vez de procurar time por nome) e a triagem do scanner,
+        // que reaproveita ESTE cache e precisa dos mesmos campos.
+        timeAId: f.teams?.home?.id ?? null,
+        timeBId: f.teams?.away?.id ?? null,
         golsA: f.goals?.home,
         golsB: f.goals?.away,
       }))
