@@ -295,6 +295,12 @@ async function buscarFixturePorId(fixtureId, headers) {
       data: f.fixture?.date || null,
       ligaNome: f.league?.name || null,
       round: f.league?.round || null,
+      // Nomes na grafia OFICIAL da API-Football. Quando existem, valem mais
+      // que o texto digitado/montado pelo chamador: é a mesma string que a
+      // base usa internamente, sem divergência de acento, hífen ou nome
+      // composto.
+      timeANome: f.teams?.home?.name || null,
+      timeBNome: f.teams?.away?.name || null,
     };
   } catch (e) {
     logErro('buscarFixturePorId', { fixtureId }, e);
@@ -1082,8 +1088,10 @@ export async function getFootballData(jogo, opts = {}) {
 
   return {
     disponivel: true,
-    time_a: timeA,
-    time_b: timeB,
+    // Prioriza a grafia oficial da API-Football quando o confronto foi
+    // identificado por id; cai no texto do chamador só no caminho por nome.
+    time_a: fixtureFuturo?.timeANome || timeA,
+    time_b: fixtureFuturo?.timeBNome || timeB,
     // Confiança da identificação dos times: false quando o nome digitado
     // não bateu exatamente com nenhum time da base e o código caiu pro
     // primeiro resultado de busca por relevância — risco real de estar
