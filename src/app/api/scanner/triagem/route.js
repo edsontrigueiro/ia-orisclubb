@@ -8,36 +8,53 @@ import { fetchComRetry } from '@/lib/fetchUtil';
 // SCANNER DE GRADE — Estágio 1 (triagem barata)
 //
 // Objetivo: olhar a grade INTEIRA do dia gastando quase nada de cota
-// (~1 chamada de fixtures + ~15-30 páginas de odds) e devolver os pares
+// (~1 chamada de fixtures + N páginas de odds) e ORDENAR os pares
 // (jogo × mercado) que valem a análise completa — que custa 7-9 chamadas
 // de API-Football + 1 chamada de IA CADA.
 //
-// v2 — TODOS OS MERCADOS. A v1 fazia cada jogo competir com UM único
-// mercado (o de maior margem). Como "+0.5 Gols" tem probabilidade
-// implícita altíssima em praticamente qualquer jogo (~92%), ele vencia a
-// disputa interna sempre e o scanner virou um detector de "+0.5 Gols" —
-// 36 aptos, 36 vezes o mesmo mercado, odds de 1.05. Agora cada jogo gera
-// um candidato POR MERCADO elegível, e a seleção final é round-robin
-// (um de cada mercado por rodada, do maior pro menor margem), o que
-// garante variedade de mercado dentro do mesmo teto de cota.
+// v4 — A ODD DEIXA DE SER CORTE E VIRA ORDENAÇÃO + LEITURA.
 //
-// A análise completa NÃO acontece aqui: o frontend (aba Scanner) recebe a
-// lista de aptos e chama /api/analyze um par por vez, com origem
-// 'scanner' — reusando o pipeline que já existe e já grava em
-// analises_historico. Esta rota não escreve nada além de cache.
+// Decisão do Edson: a odd pode MOSTRAR se há valor de entrada, mas não
+// pode barrar jogo nem influenciar a solução da análise. Isso já valia no
+// /api/analyze (Gates 7 e 8 são explicitamente não-bloqueantes e
+// odd_real_ausente saiu do sinais_fracos_count). Faltava aqui, onde a odd
+// ainda era o único critério de seleção.
+//
+// O motivo de fundo é mais grave que preferência: selecionar por
+// probabilidade implícita de-vigada é CIRCULAR. Só entram jogos em que o
+// mercado já concorda que o evento é provável — e valor, por definição,
+// mora onde o modelo DISCORDA do mercado. A triagem antiga era
+// estruturalmente incapaz de encontrar aquilo que justifica o produto
+// existir.
+//
+// O que mudou em relação à v3:
+//   • TOLERANCIA_MARGEM_PP não filtra mais nada. Vira só rótulo
+//     (dentroDaTolerancia) e leitura de valor (valorEntrada).
+//   • Jogo sem odd publicada NÃO é mais descartado. Entra na fila de todos
+//     os mercados, marcado semOdds, ordenado por último.
+//   • A margem continua sendo a chave de ORDENAÇÃO da fila. Ordenar não é
+//     barrar: nenhum jogo é excluído por causa dela, mas alguém precisa
+//     decidir quem ocupa as vagas quando há 900 candidatos para 40 lugares,
+//     e a odd é o único sinal obtível para a grade inteira com 2 chamadas.
+//
+// LIMITE HONESTO: com a grade grande, jogo sem odd fica no fim de todas as
+// filas e na prática raramente sobe. Ele deixou de ser barrado, mas não
+// virou prioridade. Para garantir representação a esses jogos seria
+// preciso reservar cota fixa — decisão em aberto, não implementada aqui.
+//
+// A análise completa NÃO acontece aqui: o frontend recebe a lista de aptos
+// e chama /api/analyze um par por vez, com origem 'scanner'. Esta rota não
+// escreve nada além de cache.
 // ─────────────────────────────────────────────────────────────────────────
 
 // 30 min: odds do dia mudam devagar de manhã; perto do kickoff o usuário
 // pode forçar refresh (?refresh=1) se quiser a foto mais recente.
 const CACHE_TTL_MS = 30 * 60 * 1000;
 
-// Ligas onde a cobertura de dados da API-Football já se provou boa o
-// bastante pros Gates. O scanner SÓ considera essas — liga fora daqui é
-// descartada com motivo. Racional: na análise manual o Gate 2 protege
-// caso a caso; numa varredura em massa, gastar 8 chamadas por jogo pra
-// descobrir que o dado é ruim inverte a lógica do funil. Pra ampliar
-// cobertura, adicionar o ID aqui é o único passo.
-const LIGAS_COBERTAS = new Set([
+// Ligas com histórico de calibração no sistema. NÃO é filtro por padrão —
+// é etiqueta de confiança. Ampliar conforme cada liga acumule amostra
+// resolvida suficiente em calibracao_por_liga.
+const LIGAS_CALIBRADAS = new Set([
   2, 3,                   // Champions League, Europa League
   1,                      // Copa do Mundo
   39, 140, 135, 78, 61,   // Premier League, La Liga, Serie A, Bundesliga, Ligue 1
@@ -46,15 +63,13 @@ const LIGAS_COBERTAS = new Set([
   11,                     // Sul-Americana
   88, 94,                 // Eredivisie, Primeira Liga (Portugal)
   128,                    // Liga Profesional (Argentina)
-  // Ligas de calendário "verão europeu" — sem elas, a triagem em jun-ago
-  // descarta quase a grade inteira (as top europeias estão de férias):
   253,                    // MLS (EUA)
   262,                    // Liga MX (México)
   239,                    // Primera A (Colômbia)
   265,                    // Primera División (Chile)
   98,                     // J1 League (Japão)
   292,                    // K League 1 (Coreia do Sul)
-  103, 113, 119,          // Eliteserien (Noruega), Allsvenskan (Suécia), Superliga (Dinamarca)
+  103, 113, 119,          // Eliteserien, Allsvenskan, Superliga (Dinamarca)
   244,                    // Veikkausliiga (Finlândia)
   106,                    // Ekstraklasa (Polônia)
   40,                     // Championship (Inglaterra)
@@ -62,31 +77,34 @@ const LIGAS_COBERTAS = new Set([
 
 // Teto de PARES (jogo × mercado) por varredura — não de jogos. Protege a
 // cota (40 × ~8 chamadas ≈ 320 requests no estágio caro) e o tempo do
-// loop no frontend (40 × ~10s ≈ 7 min). Quem passa do corte NÃO é
-// reprovado: é descartado com motivo explícito de corte, pra ficar claro
-// que foi cota, não mérito.
-const MAX_APTOS = 40;
+// loop no frontend. Quem fica de fora NÃO é reprovado: é corte de cota.
+const MAX_APTOS_PADRAO = 40;
+const MAX_APTOS_TETO = 120;
 
-// Tolerância da triagem, em pontos percentuais ABAIXO do mínimo da
-// estratégia. Racional: exigir margem >= 0 (odd de mercado já acima do
-// mínimo) seria MAIS rígido que o próprio pipeline — no /api/analyze o
-// Gate 7 (essa mesma comparação) é informativo, não bloqueante. A zona
-// logo abaixo do mínimo é justamente onde o dado real pode divergir do
-// mercado a favor. O corte de verdade continua sendo dos Gates 0-25 + IA.
+// Referência de leitura de valor, em pontos percentuais em relação ao
+// mínimo da estratégia. NÃO FILTRA NADA desde a v4 — serve só para rotular
+// o candidato (dentro/fora da faixa de referência) na interface.
 const TOLERANCIA_MARGEM_PP = 6;
 
-// Teto de páginas de odds (20 fixtures/página). 30 páginas cobrem 600
-// jogos com odds — mais que qualquer grade real das ligas cobertas.
-const MAX_PAGINAS_ODDS = 30;
+// Odds vêm 20 fixtures por página. Teto derivado da grade real, com parada
+// antecipada quando todos os candidatos já têm odds.
+const FIXTURES_POR_PAGINA_ODDS = 20;
+const TETO_ABSOLUTO_PAGINAS_ODDS = 120;
+
+// Sem corte por margem, a sobra de candidatos passa fácil de 10.000 pares.
+// Materializar tudo em `descartes` geraria um JSON gigante sem utilidade —
+// a contagem por categoria já responde a pergunta. Este teto limita só o
+// DETALHAMENTO; os contadores continuam completos.
+const MAX_DESCARTES_DETALHADOS = 400;
 
 // bookmaker=8 (Bet365) — mesma referência usada em buscarOddsReais do
 // footballData.js, pra triagem e análise completa enxergarem o mesmo
 // mercado e não divergirem entre estágios do funil.
 const BOOKMAKER_ID = 8;
 
-// Score mínimo por mercado — replica MERCADOS de /api/analyze. A triagem
-// usa a MESMA régua do funil, só que antes e de graça. Manter em sincronia
-// com aquele arquivo: se um mínimo mudar lá, mudar aqui também.
+// Score mínimo por mercado — replica MERCADOS de /api/analyze. Usado aqui
+// APENAS como referência de leitura de valor, nunca como corte. Manter em
+// sincronia com aquele arquivo.
 const MINIMOS = {
   'Lay 2x2':         82,
   'Dupla Chance':    86,
@@ -102,9 +120,9 @@ const MINIMOS = {
 
 // Ordem de prioridade no round-robin. Mercados com odd operacional mais
 // alta primeiro: quando o teto de cota corta, o que sobrevive é o que
-// paga melhor. "+0.5 Gols" fica por último de propósito — ele é o mais
-// fácil de aprovar e o que menos remunera (odds 1.05-1.10), então não
-// pode voltar a monopolizar a varredura.
+// paga melhor. "+0.5 Gols" fica por último de propósito — é o mais fácil
+// de aprovar e o que menos remunera (odds 1.05-1.10), então não pode
+// voltar a monopolizar a varredura como fez na v1.
 const ORDEM_MERCADOS = [
   '+8.5 Escanteios',
   'BTTS Não',
@@ -217,11 +235,29 @@ function todasEstrategias(o) {
   // Lay 2x2 não tem par complementar publicado — a odd do placar exato
   // 2:2 vem com a vig inteira embutida. Usar 1/odd SUPERESTIMA a chance
   // de sair 2-2 e, portanto, SUBESTIMA a probabilidade do lay: erro pro
-  // lado conservador (pode deixar passar candidato bom, nunca aprova
-  // candidato ruim). Aceitável numa triagem cujo corte real são os Gates.
+  // lado conservador. Aceitável numa triagem que não corta nada.
   if (o.placar22) add('Lay 2x2', 1 - (1 / o.placar22), `placar 2-2 @ ${o.placar22.toFixed(2)}`);
 
   return out;
+}
+
+// Leitura de valor de entrada — a única coisa que a odd faz agora além de
+// ordenar. Nunca vira decisão: é texto pra tela.
+function leituraValor(margem) {
+  if (margem == null) return 'Sem odd publicada — leitura de valor indisponível';
+  if (margem >= 0) return 'Preço de mercado acima da referência do mercado-alvo';
+  if (margem >= -TOLERANCIA_MARGEM_PP) return 'Preço de mercado próximo da referência';
+  return 'Preço de mercado abaixo da referência — divergência a checar na análise';
+}
+
+// Agrupa os motivos de descarte em categorias estáveis. O motivo por jogo
+// carrega detalhe variável, o que impediria somar — aqui a categoria é
+// fixa, e é ela que responde "por que veio pouca coisa".
+function categoriaDescarte(motivo) {
+  if (motivo.startsWith('Jogo já iniciado')) return 'Jogo já começou ou terminou';
+  if (motivo.startsWith('Liga fora')) return 'Liga fora do modo calibrado';
+  if (motivo.startsWith('Corte de cota')) return 'Corte de cota (teto de aptos)';
+  return 'Outro';
 }
 
 export async function GET(request) {
@@ -229,10 +265,29 @@ export async function GET(request) {
   if (!session) return NextResponse.json({ error: 'Não autenticado.' }, { status: 401 });
 
   const { searchParams } = new URL(request.url);
-  const data = new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+
+  // ── Data: explícita ou hoje ────────────────────────────────────────────
+  // Mesma validação da rota jogos-do-dia — o valor vai direto pra URL da
+  // API-Football e pra chave de cache, então nunca confiar na query string.
+  const dataParam = searchParams.get('data');
+  const data = dataParam ||
+    new Date().toLocaleDateString('en-CA', { timeZone: 'America/Sao_Paulo' });
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(data)) {
+    return NextResponse.json({ error: 'Parâmetro "data" inválido, use YYYY-MM-DD.' }, { status: 400 });
+  }
+
+  // ── Modo de liga: todas (padrão) ou só as calibradas ───────────────────
+  const modoLigas = searchParams.get('ligas') === 'calibradas' ? 'calibradas' : 'todas';
+
+  // ── Teto de aptos ──────────────────────────────────────────────────────
+  const maxParam = parseInt(searchParams.get('max') || '', 10);
+  const MAX_APTOS = Number.isFinite(maxParam)
+    ? Math.min(Math.max(maxParam, 1), MAX_APTOS_TETO)
+    : MAX_APTOS_PADRAO;
+
   const forcarRefresh = searchParams.get('refresh') === '1';
 
-  const chave = `scanner-triagem-v2::${data}`;
+  const chave = `scanner-triagem-v4::${data}::${modoLigas}::${MAX_APTOS}`;
   if (!forcarRefresh) {
     const cacheado = await getCached(chave, CACHE_TTL_MS);
     if (cacheado) return NextResponse.json({ ...cacheado, _cache: true });
@@ -246,7 +301,7 @@ export async function GET(request) {
   try {
     // ── Grade do dia ────────────────────────────────────────────────────
     // Reaproveita o cache da aba Jogos do Dia quando existir — economiza
-    // a chamada de fixtures inteira se o usuário já abriu aquela aba hoje.
+    // a chamada de fixtures inteira se o usuário já abriu aquela aba.
     let jogosGrade = null;
     const cacheGrade = await getCached(`jogos-do-dia::${data}`, 60 * 60 * 1000);
     if (cacheGrade?.jogos?.length) {
@@ -267,41 +322,67 @@ export async function GET(request) {
         status: f.fixture?.status?.short || null,
         liga: f.league?.name || 'Outra liga',
         ligaId: f.league?.id ?? null,
+        season: f.league?.season ?? null,
         pais: f.league?.country || null,
         timeA: f.teams?.home?.name || '?',
         timeB: f.teams?.away?.name || '?',
+        // IDs numéricos dos times, direto da API-Football. Guardar aqui é o
+        // que permite o estágio caro pular a resolução por nome
+        // (teams?search=), que quebra com acento, hífen e nome composto.
+        timeAId: f.teams?.home?.id ?? null,
+        timeBId: f.teams?.away?.id ?? null,
       }));
     }
 
     const totalGrade = jogosGrade.length;
     const descartes = [];
-    const candidatosPorFixture = new Map();
+    const contadorDescartes = {};
+    let descartesOmitidos = 0;
 
+    const registrarDescarte = (evento, liga, motivo) => {
+      const cat = categoriaDescarte(motivo);
+      contadorDescartes[cat] = (contadorDescartes[cat] || 0) + 1;
+      if (descartes.length < MAX_DESCARTES_DETALHADOS) descartes.push({ evento, liga, motivo });
+      else descartesOmitidos++;
+    };
+
+    const candidatosPorFixture = new Map();
     for (const j of jogosGrade) {
       const evento = `${j.timeA} vs ${j.timeB}`;
       // Só jogo que ainda não começou: o pipeline de análise inteiro
       // (forma recente, odds pré-jogo, Gates) assume estado pré-jogo.
       if (j.status && j.status !== 'NS' && j.status !== 'TBD') {
-        descartes.push({ evento, liga: j.liga, motivo: 'Jogo já iniciado ou encerrado' });
+        registrarDescarte(evento, j.liga, 'Jogo já iniciado ou encerrado');
         continue;
       }
-      if (!LIGAS_COBERTAS.has(j.ligaId)) {
-        descartes.push({ evento, liga: j.liga, motivo: 'Liga fora da cobertura calibrada do scanner' });
+      if (modoLigas === 'calibradas' && !LIGAS_CALIBRADAS.has(j.ligaId)) {
+        registrarDescarte(evento, j.liga, 'Liga fora da cobertura calibrada do scanner');
         continue;
       }
       candidatosPorFixture.set(j.id, j);
     }
 
     // ── Odds do dia (paginadas) ─────────────────────────────────────────
+    // Teto derivado da grade real, não fixo: com todas as ligas liberadas
+    // um teto baixo fazia jogo legítimo virar "sem odds", diagnóstico
+    // falso. O laço para assim que todo candidato tiver odds.
+    const tetoPaginas = Math.min(
+      TETO_ABSOLUTO_PAGINAS_ODDS,
+      Math.ceil((candidatosPorFixture.size || 1) / FIXTURES_POR_PAGINA_ODDS) + 15
+    );
+
     const oddsPorFixture = new Map();
-    let pagina = 1, totalPaginas = 1;
-    while (pagina <= totalPaginas && pagina <= MAX_PAGINAS_ODDS && candidatosPorFixture.size > 0) {
+    let pagina = 1, totalPaginas = 1, paginasLidas = 0, truncouOdds = false;
+    while (pagina <= totalPaginas && pagina <= tetoPaginas && candidatosPorFixture.size > 0) {
+      if (oddsPorFixture.size >= candidatosPorFixture.size) break;
+
       const res = await fetchComRetry(
         `https://v3.football.api-sports.io/odds?date=${data}&bookmaker=${BOOKMAKER_ID}&page=${pagina}&timezone=America/Sao_Paulo`,
         { headers }, { timeoutMs: 15000 }
       );
       requestsGastos++;
-      if (!res.ok) break; // triagem parcial > triagem nenhuma
+      paginasLidas++;
+      if (!res.ok) { truncouOdds = true; break; } // triagem parcial > triagem nenhuma
       const json = await res.json();
       totalPaginas = json?.paging?.total || 1;
       for (const item of json?.response || []) {
@@ -312,54 +393,89 @@ export async function GET(request) {
       }
       pagina++;
     }
+    if (pagina <= totalPaginas && oddsPorFixture.size < candidatosPorFixture.size) truncouOdds = true;
 
-    // ── Avaliação: TODOS os mercados de cada jogo ───────────────────────
+    // ── Montagem dos candidatos ─────────────────────────────────────────
+    // NENHUM descarte por odd aqui. Jogo com odd gera um candidato por
+    // mercado precificado; jogo sem odd gera candidato para TODOS os
+    // mercados, marcado semOdds. A odd só decide POSIÇÃO na fila.
     const candidatos = [];
+    let semOddsCount = 0;
+
     for (const [fid, j] of candidatosPorFixture) {
       const evento = `${j.timeA} vs ${j.timeB}`;
+      const base = {
+        fixtureId: fid,
+        evento, timeA: j.timeA, timeB: j.timeB, liga: j.liga, hora: j.hora,
+        // Repassados de propósito: são eles que permitem ao estágio caro
+        // identificar o confronto sem busca por nome.
+        timeAId: j.timeAId,
+        timeBId: j.timeBId,
+        ligaId: j.ligaId,
+        season: j.season,
+        ligaCalibrada: LIGAS_CALIBRADAS.has(j.ligaId),
+      };
+
       const odds = oddsPorFixture.get(fid);
-      if (!odds) {
-        descartes.push({ evento, liga: j.liga, motivo: 'Sem odds publicadas ainda (Bet365)' });
-        continue;
-      }
-      const avaliados = todasEstrategias(odds);
-      if (!avaliados.length) {
-        descartes.push({ evento, liga: j.liga, motivo: 'Odds publicadas não cobrem nenhum mercado das estratégias' });
-        continue;
-      }
-      const dentro = avaliados.filter(e => e.margem >= -TOLERANCIA_MARGEM_PP);
-      if (!dentro.length) {
-        const melhor = avaliados.reduce((a, b) => (b.margem > a.margem ? b : a));
-        descartes.push({
-          evento, liga: j.liga,
-          motivo: `Nenhum dos ${avaliados.length} mercados precificados entrou na tolerância (melhor: ${melhor.mercado}, ${melhor.margem.toFixed(1)}pp)`,
-        });
-        continue;
-      }
-      for (const e of dentro) {
-        candidatos.push({
-          fixtureId: fid,
-          chave: `${fid}::${e.mercado}`,
-          evento, timeA: j.timeA, timeB: j.timeB, liga: j.liga, hora: j.hora,
-          mercado: e.mercado,
-          probImplicita: Math.round(e.prob * 10) / 10,
-          margem: Math.round(e.margem * 10) / 10,
-          detalhe: e.detalhe,
-        });
+      const avaliados = odds ? todasEstrategias(odds) : [];
+
+      if (avaliados.length) {
+        for (const e of avaliados) {
+          const margem = Math.round(e.margem * 10) / 10;
+          candidatos.push({
+            ...base,
+            chave: `${fid}::${e.mercado}`,
+            mercado: e.mercado,
+            semOdds: false,
+            probImplicita: Math.round(e.prob * 10) / 10,
+            margem,
+            dentroDaTolerancia: margem >= -TOLERANCIA_MARGEM_PP,
+            valorEntrada: leituraValor(margem),
+            detalhe: e.detalhe,
+          });
+        }
+      } else {
+        // Sem odd publicada (ou odds que não cobrem nenhum mercado) o jogo
+        // NÃO é mais descartado. Como não há preço, não há como escolher o
+        // mercado: entra em todos, no fim de cada fila.
+        semOddsCount++;
+        for (const mercado of ORDEM_MERCADOS) {
+          candidatos.push({
+            ...base,
+            chave: `${fid}::${mercado}`,
+            mercado,
+            semOdds: true,
+            probImplicita: null,
+            margem: null,
+            dentroDaTolerancia: null,
+            valorEntrada: leituraValor(null),
+            detalhe: odds ? 'odds publicadas não cobrem este mercado' : 'sem odds publicadas (Bet365)',
+          });
+        }
       }
     }
 
     // ── Seleção round-robin por mercado ─────────────────────────────────
     // Sem isso, ordenar tudo por margem faria um único mercado ocupar as
-    // 40 vagas (foi o que aconteceu na v1 com "+0.5 Gols"). Aqui cada
-    // rodada leva o melhor candidato AINDA NÃO escolhido de cada mercado,
-    // seguindo ORDEM_MERCADOS — variedade garantida dentro do mesmo teto.
+    // vagas (foi o que aconteceu na v1 com "+0.5 Gols"). Cada rodada leva
+    // o melhor candidato AINDA NÃO escolhido de cada mercado.
+    //
+    // Critério de fila, nesta ordem: (1) tem odd antes de não tem —
+    // candidato sem preço não pula na frente de quem tem leitura; (2) liga
+    // calibrada antes de não calibrada; (3) margem maior antes. Nenhum
+    // desses exclui ninguém: só define quem entra primeiro no teto.
     const porMercado = new Map();
     for (const c of candidatos) {
       if (!porMercado.has(c.mercado)) porMercado.set(c.mercado, []);
       porMercado.get(c.mercado).push(c);
     }
-    for (const lista of porMercado.values()) lista.sort((a, b) => b.margem - a.margem);
+    for (const lista of porMercado.values()) {
+      lista.sort((a, b) => {
+        if (a.semOdds !== b.semOdds) return a.semOdds ? 1 : -1;
+        if (a.ligaCalibrada !== b.ligaCalibrada) return a.ligaCalibrada ? -1 : 1;
+        return (b.margem ?? -999) - (a.margem ?? -999);
+      });
+    }
 
     const aptos = [];
     let restam = true;
@@ -374,14 +490,17 @@ export async function GET(request) {
       }
     }
 
-    // O que sobrou nas filas passou do teto — vira descarte com motivo
-    // explícito de corte de cota, nunca "reprovado".
+    // O que sobrou passou do teto — corte de cota, nunca "reprovado".
+    // Só contabilizado (e detalhado até o teto), porque sem corte por
+    // margem a sobra pode passar de 10.000 pares.
     for (const [mercado, fila] of porMercado) {
       for (const excedente of fila) {
-        descartes.push({
-          evento: excedente.evento, liga: excedente.liga,
-          motivo: `Corte de cota — fora do teto de ${MAX_APTOS} análises (estava apto: ${mercado}, ${excedente.margem >= 0 ? '+' : ''}${excedente.margem}pp)`,
-        });
+        registrarDescarte(
+          excedente.evento, excedente.liga,
+          `Corte de cota — fora do teto de ${MAX_APTOS} análises (estava na fila: ${mercado}${
+            excedente.margem == null ? ', sem odd' : `, ${excedente.margem >= 0 ? '+' : ''}${excedente.margem}pp`
+          })`
+        );
       }
     }
 
@@ -390,12 +509,24 @@ export async function GET(request) {
 
     const payload = {
       data,
+      modoLigas,
+      maxAptos: MAX_APTOS,
       totalGrade,
+      totalPreSelecionados: candidatosPorFixture.size,
+      totalComOdds: oddsPorFixture.size,
+      totalSemOdds: semOddsCount,
       totalCandidatos: candidatos.length,
+      aptosSemOdds: aptos.filter(a => a.semOdds).length,
+      aptosNaoCalibrados: aptos.filter(a => !a.ligaCalibrada).length,
+      aptosForaDaTolerancia: aptos.filter(a => a.dentroDaTolerancia === false).length,
+      truncouOdds,
       resumoMercados,
+      resumoDescartes: contadorDescartes,
+      descartesOmitidos,
       aptos,
       descartes,
       _requests: requestsGastos,
+      _paginasOdds: paginasLidas,
     };
     await setCached(chave, payload);
     return NextResponse.json(payload);
