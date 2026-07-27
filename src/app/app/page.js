@@ -1783,10 +1783,17 @@ export default function App() {
             const emAndamento = scanRodando && totalLoop > 0;
             const itemAtual = emAndamento ? aptosAtivos[Math.min(scanIdx, totalLoop - 1)] : null;
             const descartes = scanTriagem?.descartes || [];
+            // A triagem v4 trunca o DETALHAMENTO em 400 itens (sem corte por
+            // margem a sobra passa de 10 mil pares), mas manda a contagem
+            // cheia em descartesOmitidos. Somar os dois é o único jeito de a
+            // aba não mentir sobre o tamanho do que ficou de fora.
+            const descartesTotal = descartes.length + (scanTriagem?.descartesOmitidos || 0);
+            const resumoDesc = Object.entries(scanTriagem?.resumoDescartes || {})
+              .sort((a,b) => b[1] - a[1]);
             const SUBTABS = [
               { id:'aptos',      label:'Aptos',      count: aptosAtivos.length },
               { id:'aprovados',  label:'Aprovados',  count: aprovados.length },
-              { id:'rejeitados', label:'Rejeitados', count: reprovados.length + descartes.length },
+              { id:'rejeitados', label:'Rejeitados', count: reprovados.length + descartesTotal },
             ];
             return (
             <div className="fade-up">
@@ -1820,11 +1827,22 @@ export default function App() {
                 )}
               </div>
 
+              {scanTriagem?.truncouOdds && (
+                <div style={{background:C.redDim,border:`1px solid ${C.red}`,padding:'10px 14px',fontSize:'12px',color:C.red,marginBottom:'14px',lineHeight:1.5}}>
+                  A leitura de odds foi interrompida antes do fim nesta varredura. Jogos marcados como &ldquo;sem odd&rdquo; podem ter odd publicada — refaça a triagem antes de concluir qualquer coisa sobre eles.
+                </div>
+              )}
+
               {scanTriagem && (
                 <div className="kpi-grid" style={{display:'grid',gridTemplateColumns:'repeat(4,minmax(0,1fr))',gap:'1px',background:C.border,border:`1px solid ${C.border}`,marginBottom:'18px'}}>
                   {[
                     ['Grade', scanTriagem.totalGrade, C.text],
-                    ['Candidatos', scanTriagem.totalCandidatos ?? aptosAtivos.length, C.text],
+                    // Antes era "Candidatos" = totalCandidatos. Sem corte por
+                    // margem esse número vira a fila inteira (jogos × mercados)
+                    // e passa de 4 mil numa grade completa — informação que não
+                    // ajuda ninguém num KPI. O que importa aqui é quantos vão
+                    // de fato ser analisados; a fila cheia foi pro diagnóstico.
+                    ['Na fila', aptosAtivos.length, C.text],
                     ['Analisados', `${Math.min(scanResultados.length, totalLoop)}/${totalLoop}`, C.text],
                     ['Aprovados', aprovados.length, aprovados.length ? C.orange : C.muted],
                   ].map(([label, valor, cor]) => (
@@ -1964,9 +1982,23 @@ export default function App() {
                       ))}
                     </div>
                   )}
+                  {resumoDesc.length > 0 && (
+                    <div style={{background:C.bg2,border:`1px solid ${C.border}`,padding:'13px 15px',marginBottom:'16px'}}>
+                      <div style={{fontFamily:FONT_MONO,fontSize:'10px',color:C.orange,letterSpacing:'2px',textTransform:'uppercase',marginBottom:'10px'}}>// Onde a grade morreu — contagem por motivo</div>
+                      {resumoDesc.map(([motivo, qtd]) => (
+                        <div key={motivo} style={{display:'flex',justifyContent:'space-between',gap:'12px',fontSize:'12px',padding:'6px 0',borderBottom:`1px solid ${C.border}`}}>
+                          <span style={{color:C.text,minWidth:0}}>{motivo}</span>
+                          <span style={{fontFamily:FONT_MONO,fontSize:'12px',color:C.muted,whiteSpace:'nowrap'}}>{qtd}</span>
+                        </div>
+                      ))}
+                      <div style={{fontSize:'11px',color:C.muted2,marginTop:'9px',lineHeight:1.5}}>
+                        Contagem completa. &ldquo;Corte de cota&rdquo; não é reprovação — é jogo que ficou fora do teto de análises, não jogo ruim.
+                      </div>
+                    </div>
+                  )}
                   {descartes.length > 0 && (
                     <div>
-                      <div style={{fontFamily:FONT_MONO,fontSize:'10px',color:C.muted2,letterSpacing:'2px',textTransform:'uppercase',marginBottom:'8px'}}>// Descartados na triagem ({descartes.length}) — cada um com motivo</div>
+                      <div style={{fontFamily:FONT_MONO,fontSize:'10px',color:C.muted2,letterSpacing:'2px',textTransform:'uppercase',marginBottom:'8px'}}>// Descartados na triagem ({descartesTotal}) — cada um com motivo{scanTriagem?.descartesOmitidos ? ` · detalhe limitado aos ${descartes.length} primeiros` : ''}</div>
                       {(scanVerDescartes ? descartes : descartes.slice(0,40)).map((d,i)=>(
                         <div key={i} className="row" style={{display:'flex',justifyContent:'space-between',gap:'10px',fontSize:'12px',padding:'9px 6px',borderBottom:`1px solid ${C.border}`}}>
                           <span style={{color:C.text,minWidth:0,overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{d.evento} <span style={{color:C.muted2}}>· {d.liga}</span></span>
@@ -1975,7 +2007,7 @@ export default function App() {
                       ))}
                       {descartes.length > 40 && (
                         <button className="press" onClick={()=>setScanVerDescartes(v=>!v)} style={{background:'none',border:'none',color:C.orange,fontSize:'12px',cursor:'pointer',fontFamily:'inherit',padding:'10px 6px'}}>
-                          {scanVerDescartes ? 'Mostrar menos' : `Ver todos os ${descartes.length}`}
+                          {scanVerDescartes ? 'Mostrar menos' : `Ver os ${descartes.length} detalhados`}
                         </button>
                       )}
                     </div>
