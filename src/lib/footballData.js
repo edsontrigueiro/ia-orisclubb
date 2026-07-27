@@ -274,6 +274,34 @@ async function buscarClassificacao(leagueId, season, idA, idB, headers) {
   }
 }
 
+// Busca a partida EXATA por id. Usado quando o chamador já sabe qual é o
+// confronto (scanner de grade e grade do dia já carregam o fixture.id vindo
+// da API-Football). Substitui buscarFixtureFuturo nesses casos: aquele
+// resolve "próximo confronto entre A e B", que pode ser um jogo DIFERENTE
+// do que foi selecionado — bug real quando os dois times se enfrentam mais
+// de uma vez na temporada, ou quando o H2H aponta pra outra competição.
+async function buscarFixturePorId(fixtureId, headers) {
+  try {
+    const res = await fetchComRetry(
+      `https://v3.football.api-sports.io/fixtures?id=${fixtureId}`,
+      { headers }
+    );
+    if (!res.ok) return null;
+    const data = await res.json();
+    const f = data?.response?.[0];
+    if (!f) return null;
+    return {
+      id: f.fixture?.id || fixtureId,
+      data: f.fixture?.date || null,
+      ligaNome: f.league?.name || null,
+      round: f.league?.round || null,
+    };
+  } catch (e) {
+    logErro('buscarFixturePorId', { fixtureId }, e);
+    return null;
+  }
+}
+
 async function buscarFixtureFuturo(idA, idB, headers) {
   try {
     const res = await fetchComRetry(
@@ -861,27 +889,58 @@ function calcularDescanso(jogosRecentesBrutos, dataProximoJogo) {
   };
 }
 
+// opts.identificacao — caminho IDENTIFICADO (preferido).
+//
+// Quando o chamador já tem os identificadores numéricos da API-Football
+// (scanner de grade e grade do dia carregam fixture.id, teams.home.id e
+// teams.away.id direto da resposta de /fixtures), passar
+// { fixtureId, timeAId, timeBId, ligaId, season } aqui faz a resolução por
+// NOME ser pulada por inteiro.
+//
+// Por que isso importa: a busca por nome (teams?search=) falha ou acerta o
+// time errado com acento, hífen, nome composto e homônimo entre países —
+// e, pior, buscarFixtureFuturo depois resolvia "próximo confronto entre A e
+// B", que pode ser outra partida. O caminho por ID elimina as duas classes
+// de erro e ainda economiza chamadas.
+//
+// O caminho por NOME continua existindo, intocado, para a aba Análises,
+// onde o confronto é digitado à mão e não existe id nenhum.
 export async function getFootballData(jogo, opts = {}) {
-  const { mercado = null, incluirEscanteios = null } = opts;
+  const { mercado = null, incluirEscanteios = null, identificacao = null } = opts;
   const key = process.env.FOOTBALL_API_KEY;
   if (!key) {
     return { disponivel: false, motivo: 'FOOTBALL_API_KEY não configurada.' };
   }
   const headers = { 'x-apisports-key': key };
 
+  const idsFornecidos =
+    Number.isFinite(Number(identificacao?.timeAId)) &&
+    Number.isFinite(Number(identificacao?.timeBId));
+
+  // Nomes seguem sendo extraídos do texto só para mensagem de erro e
+  // exibição — nunca para identificar o time quando há id.
   const { timeA, timeB, paisA, paisB } = parseTimes(jogo);
-  if (!timeA || !timeB) {
-    return { disponivel: false, motivo: 'Não foi possível identificar os dois times no texto informado (use "Time A vs Time B").' };
-  }
 
-  const [matchA, matchB] = await Promise.all([
-    buscarIdTimeCache(timeA, headers, paisA),
-    buscarIdTimeCache(timeB, headers, paisB),
-  ]);
-
-  if (!matchA || !matchB) {
-    const faltando = !matchA ? timeA : timeB;
-    return { disponivel: false, motivo: `Time "${faltando}" não encontrado na base da API-Football.` };
+  let matchA, matchB;
+  if (idsFornecidos) {
+    // Id vindo da própria API-Football é identificação exata por definição:
+    // não houve palpite de nome, então match_exato não pode ser falso e o
+    // Gate 0 (reprova quando os DOIS times vieram de match aproximado)
+    // nunca dispara à toa nesse caminho.
+    matchA = { id: Number(identificacao.timeAId), exato: true };
+    matchB = { id: Number(identificacao.timeBId), exato: true };
+  } else {
+    if (!timeA || !timeB) {
+      return { disponivel: false, motivo: 'Não foi possível identificar os dois times no texto informado (use "Time A vs Time B").' };
+    }
+    [matchA, matchB] = await Promise.all([
+      buscarIdTimeCache(timeA, headers, paisA),
+      buscarIdTimeCache(timeB, headers, paisB),
+    ]);
+    if (!matchA || !matchB) {
+      const faltando = !matchA ? timeA : timeB;
+      return { disponivel: false, motivo: `Time "${faltando}" não encontrado na base da API-Football.` };
+    }
   }
   const idA = matchA.id, idB = matchB.id;
 
@@ -889,14 +948,34 @@ export async function getFootballData(jogo, opts = {}) {
   // campeonatos diferentes (comum em amistosos de seleções) não podem
   // compartilhar o mesmo contexto de liga, ou a busca de estatísticas do
   // outro time simplesmente não acha nada.
-  const [proximoJogoA, proximoJogoB] = await Promise.all([
-    buscarProximoJogoCache(idA, headers),
-    buscarProximoJogoCache(idB, headers),
-  ]);
-  const leagueIdA = proximoJogoA?.league?.id || null;
-  const seasonA = proximoJogoA?.league?.season || null;
-  const leagueIdB = proximoJogoB?.league?.id || null;
-  const seasonB = proximoJogoB?.league?.season || null;
+  //
+  // Com ligaId/season vindos da própria partida, essa dedução é
+  // desnecessária E menos correta: buscarProximoJogo pode devolver a
+  // competição do PRÓXIMO jogo do time (uma copa, por exemplo) em vez da
+  // competição do jogo que está sendo analisado. Quando o chamador informa
+  // a liga da partida, ela vale para os dois times e ainda economiza duas
+  // chamadas por análise. Sem essa informação, o comportamento antigo
+  // continua igual.
+  const ligaDaPartida = Number.isFinite(Number(identificacao?.ligaId))
+    ? Number(identificacao.ligaId) : null;
+  const seasonDaPartida = Number.isFinite(Number(identificacao?.season))
+    ? Number(identificacao.season) : null;
+
+  let proximoJogoA = null, proximoJogoB = null;
+  let leagueIdA, seasonA, leagueIdB, seasonB;
+  if (ligaDaPartida && seasonDaPartida) {
+    leagueIdA = leagueIdB = ligaDaPartida;
+    seasonA = seasonB = seasonDaPartida;
+  } else {
+    [proximoJogoA, proximoJogoB] = await Promise.all([
+      buscarProximoJogoCache(idA, headers),
+      buscarProximoJogoCache(idB, headers),
+    ]);
+    leagueIdA = proximoJogoA?.league?.id || null;
+    seasonA = proximoJogoA?.league?.season || null;
+    leagueIdB = proximoJogoB?.league?.id || null;
+    seasonB = proximoJogoB?.league?.season || null;
+  }
 
   // Escanteio é caro (1 chamada extra por partida) — só busca quando o
   // mercado selecionado de fato precisa desse dado, OU quando explicitamente
@@ -924,7 +1003,9 @@ export async function getFootballData(jogo, opts = {}) {
     buscarEstatisticasComFallback(idB, leagueIdB, seasonB, headers, 'estatisticas_b', _debugRaw),
     buscarFormaRecente(idA, headers, 10, precisaEscanteios, 'forma_a', _debugRaw),
     buscarFormaRecente(idB, headers, 10, precisaEscanteios, 'forma_b', _debugRaw),
-    buscarFixtureFuturo(idA, idB, headers),
+    Number.isFinite(Number(identificacao?.fixtureId))
+      ? buscarFixturePorId(Number(identificacao.fixtureId), headers)
+      : buscarFixtureFuturo(idA, idB, headers),
     precisaClassificacao ? buscarClassificacao(leagueIdA, seasonA, idA, idB, headers) : Promise.resolve(null),
   ]);
 
@@ -1024,8 +1105,11 @@ export async function getFootballData(jogo, opts = {}) {
     // depender de alguém marcar manualmente.
     fixture_id: fixtureFuturo?.id || null,
     data_jogo: fixtureFuturo?.data || null,
-    liga_time_a: proximoJogoA?.league?.name || null,
-    liga_time_b: proximoJogoB?.league?.name || null,
+    // No caminho identificado (por id) não existe "próximo jogo" resolvido —
+    // a liga da partida é a que veio junto com a própria fixture, e é ela
+    // que descreve o contexto correto dos dois times neste confronto.
+    liga_time_a: proximoJogoA?.league?.name || fixtureFuturo?.ligaNome || null,
+    liga_time_b: proximoJogoB?.league?.name || fixtureFuturo?.ligaNome || null,
     // Posição/pontos/saldo na tabela — null salvo quando mercado é "Dupla
     // Chance" ou "Lay Empate" E os dois times estão comprovadamente na
     // mesma liga+temporada (ver buscarClassificacao/precisaClassificacao).
