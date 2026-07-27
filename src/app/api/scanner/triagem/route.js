@@ -303,7 +303,7 @@ export async function GET(request) {
     // Reaproveita o cache da aba Jogos do Dia quando existir — economiza
     // a chamada de fixtures inteira se o usuário já abriu aquela aba.
     let jogosGrade = null;
-    const cacheGrade = await getCached(`jogos-do-dia::${data}`, 60 * 60 * 1000);
+    const cacheGrade = await getCached(`jogos-do-dia-v2::${data}`, 60 * 60 * 1000);
     if (cacheGrade?.jogos?.length) {
       jogosGrade = cacheGrade.jogos;
     } else {
